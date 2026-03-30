@@ -42,12 +42,13 @@
   - [`NEXT.md`](NEXT.md)
   - [`plan.md`](plan.md)
   - [`LM_STUDIO_CHECKLIST.md`](LM_STUDIO_CHECKLIST.md)
+  - [`benchmark/README.md`](benchmark/README.md)
 
 ## ✨ 目前可用功能
 
 - 🤖 backend
+  - `lm_studio`
   - `anthropic`
-  - `openai_compat`
 - 👀 read-only tools
   - `view`
   - `ls`
@@ -78,8 +79,9 @@
 ## 🚀 快速開始
 
 1. 準備 `config.json`
-2. 若使用預設 Anthropic backend，設定 `ANTHROPIC_API_KEY`
-3. 在此目錄下執行：
+2. 預設會使用 LM Studio，確認 `http://192.168.40.1:1234/v1` 可連線
+3. 若你要改用 Anthropic backend，再設定 `ANTHROPIC_API_KEY`
+4. 在此目錄下執行：
 
 ```bash
 python -m crush_py
@@ -90,6 +92,15 @@ python -m crush_py
 ```bash
 python -m unittest discover -s tests
 ```
+
+## 📊 跑 small-model benchmark
+
+```bash
+python scripts/run_small_model_benchmark.py --config config.json
+```
+
+- benchmark prompt 集合在 [`benchmark/small_model_cases.json`](benchmark/small_model_cases.json)
+- benchmark 說明在 [`benchmark/README.md`](benchmark/README.md)
 
 ## 💬 REPL 指令
 
@@ -174,7 +185,7 @@ python -m unittest discover -s tests
 {
   "workspace_root": "..",
   "sessions_dir": ".crush_py/sessions",
-  "default_backend": "anthropic",
+  "default_backend": "lm_studio",
   "backends": {
     "anthropic": {
       "type": "anthropic",
@@ -186,8 +197,8 @@ python -m unittest discover -s tests
     },
     "lm_studio": {
       "type": "openai_compat",
-      "model": "qwen2.5-coder-3b-instruct",
-      "base_url": "http://127.0.0.1:1234/v1",
+      "model": "google/gemma-3-4b",
+      "base_url": "http://192.168.40.1:1234/v1",
       "api_key": "not-needed",
       "timeout": 60,
       "max_tokens": 4096

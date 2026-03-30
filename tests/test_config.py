@@ -15,7 +15,7 @@ class LoadConfigTests(unittest.TestCase):
             root = Path(tmpdir).resolve()
             self.assertEqual(config.workspace_root, root)
             self.assertEqual(config.sessions_dir, root / ".crush_py" / "sessions")
-            self.assertEqual(config.default_backend, "anthropic")
+            self.assertEqual(config.default_backend, "lm_studio")
             self.assertIn("anthropic", config.backends)
             self.assertIn("lm_studio", config.backends)
             self.assertTrue(config.ask_on_write)

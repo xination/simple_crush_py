@@ -7,8 +7,8 @@ from typing import Dict, Optional
 
 DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
-DEFAULT_OPENAI_COMPAT_BASE_URL = "http://127.0.0.1:1234/v1"
-DEFAULT_OPENAI_COMPAT_MODEL = "qwen2.5-coder-3b-instruct"
+DEFAULT_OPENAI_COMPAT_BASE_URL = "http://192.168.40.1:1234/v1"
+DEFAULT_OPENAI_COMPAT_MODEL = "google/gemma-3-4b"
 
 
 class ConfigError(Exception):
@@ -42,7 +42,7 @@ def _default_config_dict() -> dict:
     return {
         "workspace_root": ".",
         "sessions_dir": ".crush_py/sessions",
-        "default_backend": "anthropic",
+        "default_backend": "lm_studio",
         "backends": {
             "anthropic": {
                 "type": "anthropic",
@@ -110,7 +110,7 @@ def load_config(config_path: Optional[str] = None, base_dir: Optional[str] = Non
             max_tokens=int(backend.get("max_tokens", 4096)),
         )
 
-    default_backend = raw.get("default_backend", "anthropic")
+    default_backend = raw.get("default_backend", "lm_studio")
     if default_backend not in backends:
         raise ConfigError("Default backend `{0}` is not configured.".format(default_backend))
 

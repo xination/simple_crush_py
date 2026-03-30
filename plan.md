@@ -17,9 +17,9 @@
 ## 🧱 產品方向
 
 - v1 採用 **REPL-first** CLI
-- 預設 backend 為 **Anthropic Messages API**
+- 預設 backend 為 **LM Studio (`lm_studio`)**
 - 同時保留後續擴充：
-  - LM Studio / OpenAI-compatible backend
+  - Anthropic Messages API
   - Hugging Face local backend
 - session 與歷史記錄使用 **JSON / JSONL**
 - 不使用 SQLite
@@ -54,8 +54,8 @@
 - `bash`
 - tool permission gate
 - backend adapters：
+  - `lm_studio`
   - `anthropic`
-  - `openai_compat`
 - Python 3.9 相容
 
 ### ❌ Exclude
@@ -84,16 +84,25 @@
   - 保存 user / assistant / tool messages
 - runtime **不是 rule-based classifier**
 - action 選擇主要由模型決定；runtime 是 orchestration layer
+- 目前已加入較瘦的 prompt 與較強的 routing 控制：
+  - read-only / mutating 動態工具子集
+  - sliding window 式歷史裁切
+  - 單一候選檔時的 `glob/grep -> view` routing guard
+  - 重複失敗的 `bash/edit` retry guard
+  - 目標是降低 repo 導覽時的路徑猜測、幻覺與無效重試
 
 ### 🔌 Backends
 
-- `anthropic`
+- `lm_studio`
   - 預設 backend
-  - 已支援多輪 messages 與 tool loop
-- `openai_compat`
-  - 主要對應 LM Studio
+  - 底層型別為 `openai_compat`
   - 已完成 payload / parser / tool-calling 實作
-  - 尚待 live runtime 驗證
+  - 已完成 live LM Studio 驗證
+  - tool-calling request 目前會使用較小的 `max_tokens`
+  - tool result 目前會先做截斷，避免 payload 過胖
+  - 目前主要強化方向是 read-only tool selection 穩定性
+- `anthropic`
+  - 已支援多輪 messages 與 tool loop
 - `hf_local`
   - 目前僅 stub
 
@@ -112,12 +121,18 @@
 ### Current automation boundary
 
 - 自動 tool-calling 目前開放：
-  - `view`
-  - `ls`
-  - `glob`
-  - `grep`
-  - `edit`
-  - `bash`
+  - read-only 問題：
+    - `view`
+    - `ls`
+    - `glob`
+    - `grep`
+  - 明確修改 / 執行問題：
+    - `view`
+    - `ls`
+    - `glob`
+    - `grep`
+    - `edit`
+    - `bash`
 - `edit` 採：
   - preview
   - user confirmation
@@ -201,20 +216,35 @@
 - `openai_compat`
 - automatic tool-calling
 - parser / fake tests
-- 狀態：🟡 程式完成，待 live LM Studio 驗證
+- live LM Studio validation
+- 狀態：✅ 已完成
 
 ### Phase 7. Hardening
 
 - tests
 - air-gap / setup 文件
 - LM Studio checklist
-- 狀態：🟡 已完成大部分，仍可持續強化
+- read-only tool selection stability
+- context compaction / payload slimming
+- 狀態：🟡 進行中
 
 ### Phase 8. HF Local Evaluation
 
 - 先保留 stub
 - 再依實際環境決定是否正式支援
 - 狀態：⏸️ 尚未開始
+
+## 🔮 候選後續方向
+
+- Unified diff 形式的 `edit` preview
+- `/trace` 類型過濾與更細的檢視模式
+- `/history` 顯示模式擴充
+- `write` 是否納入 automatic tool-calling
+- 更精細的 context compaction / canonicalization
+- `view` 結果的結構化摘要，而不只是截斷
+- 大檔案分段閱讀策略
+- session checkpoint / undo
+- token-aware output truncation
 
 ## 🧪 測試方向
 
@@ -232,7 +262,7 @@
 
 ## 📝 已鎖定的重要決策
 
-- 預設 backend 是 **Anthropic Messages API**
+- 預設 backend 是 **LM Studio (`lm_studio`)**
 - `ref/ask_ai` 是 backend 實作參考
 - `ref/crush` 是功能切分與 agent/runtime 參考
 - v1 以 **REPL + JSON session + 單一 agent runtime** 為核心

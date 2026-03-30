@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .base import BaseTool, ToolError
-from .common import ensure_in_workspace
+from .common import ensure_in_workspace, should_skip_path
 
 
 MAX_RESULTS = 200
@@ -17,12 +17,25 @@ class GlobTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "Find files by glob pattern.",
+            "description": (
+                "Find files by glob pattern under a workspace-relative directory. Use this when you know the file "
+                "name shape, such as `**/*.py` or `**/session_store.py`, but not the exact location. Prefer "
+                "`glob` for file discovery, then `view` for reading the file. Do not start paths with `/`. "
+                "Noise directories like `.crush_py`, `.codex`, caches, and `tests` are skipped by default unless "
+                "you explicitly search inside them."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string", "default": "."},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern such as `**/*.py` or `**/README.md`.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "default": ".",
+                        "description": "Workspace-relative directory path that bounds the glob search.",
+                    },
                 },
                 "required": ["pattern"],
             },
@@ -44,6 +57,8 @@ class GlobTool(BaseTool):
 
         matches = []
         for path in sorted(search_root.glob(pattern)):
+            if should_skip_path(self.workspace_root, search_root, path):
+                continue
             if not path.exists():
                 continue
             try:

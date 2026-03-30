@@ -15,15 +15,36 @@ class EditTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "Edit a file by replacing one text block with another.",
+            "description": (
+                "Edit a UTF-8 text file by replacing exact existing text with new text. Use this only after you "
+                "have already inspected the file with `view` and know the exact workspace-relative path and the "
+                "exact `old_text` to replace. Do not start paths with `/`."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "old_text": {"type": "string"},
-                    "new_text": {"type": "string"},
-                    "replace_all": {"type": "boolean", "default": False},
-                    "confirm": {"type": "boolean", "default": False},
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative file path. Example: `crush_py/config.py`.",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "Exact existing text to replace. Prefer copying it from `view` output.",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "Replacement text for the matched block.",
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set true only when every exact match should be replaced.",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Internal confirmation flag. The runtime sets this after user approval.",
+                    },
                 },
                 "required": ["path", "old_text", "new_text"],
             },

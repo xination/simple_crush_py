@@ -1,4 +1,5 @@
 import json
+import re
 from urllib import error, request
 
 from .base import AssistantTurn, BackendError, BaseBackend, ToolCall
@@ -6,6 +7,8 @@ from .base import AssistantTurn, BackendError, BaseBackend, ToolCall
 
 class OpenAICompatBackend(BaseBackend):
     name = "openai_compat"
+    DEFAULT_MAX_TOOL_CALL_TOKENS = 1024
+    DEFAULT_MAX_TOOL_RESULT_CHARS = 4000
 
     def __init__(self, model, api_key, base_url, timeout=60, max_tokens=4096):
         self.model = model
@@ -43,7 +46,7 @@ class OpenAICompatBackend(BaseBackend):
     def _request(self, system_prompt, messages, stream, tools=None):
         payload = {
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._effective_max_tokens(tools),
             "messages": self._to_openai_messages(system_prompt, messages),
         }
         if stream:
@@ -164,10 +167,101 @@ class OpenAICompatBackend(BaseBackend):
                 {
                     "role": "tool",
                     "tool_call_id": item.get("tool_use_id", ""),
-                    "content": item.get("content", ""),
+                    "content": self._truncate_tool_result(item),
                 }
             )
         return messages
+
+    def _truncate_tool_result(self, item):
+        content = item.get("content", "")
+        if item.get("tool_name") == "view":
+            content = self._compact_view_result(content)
+        max_tool_result_chars = self._tool_result_char_budget()
+        if len(content) <= max_tool_result_chars:
+            return content
+        return content[: max_tool_result_chars] + "\n...[truncated]"
+
+    def _compact_view_result(self, content):
+        max_tool_result_chars = self._tool_result_char_budget()
+        if len(content) <= max_tool_result_chars:
+            return content
+
+        lines = content.splitlines()
+        if not lines:
+            return content
+
+        open_tag = lines[0] if lines and lines[0].startswith("<file ") else ""
+        close_tag = "</file>" if "</file>" in lines else ""
+        continuation = ""
+        if lines and lines[-1].startswith("File has more lines."):
+            continuation = lines[-1]
+
+        body = []
+        for line in lines:
+            if not line or line == open_tag or line == close_tag or line == continuation:
+                continue
+            body.append(line)
+
+        reserved = 200
+        budget = max(200, max_tool_result_chars - reserved)
+        parts = []
+        used = 0
+
+        for item in (open_tag,):
+            if item:
+                parts.append(item)
+                used += len(item) + 1
+
+        kept_body_lines = 0
+        for line in body:
+            line_cost = len(line) + 1
+            if used + line_cost > budget:
+                break
+            parts.append(line)
+            used += line_cost
+            kept_body_lines += 1
+
+        omitted = len(body) - kept_body_lines
+        if omitted > 0:
+            parts.append("...[{0} more `view` lines omitted]".format(omitted))
+        if close_tag:
+            parts.append(close_tag)
+        if continuation:
+            parts.append(continuation)
+        return "\n".join(parts)
+
+    def _effective_max_tokens(self, tools):
+        if tools:
+            return min(self.max_tokens, self._tool_call_token_budget())
+        return self.max_tokens
+
+    def _tool_call_token_budget(self):
+        if self._small_model_profile_name() == "small_model_strict":
+            return 512
+        if self._small_model_profile_name() == "small_model":
+            return 768
+        return self.DEFAULT_MAX_TOOL_CALL_TOKENS
+
+    def _tool_result_char_budget(self):
+        if self._small_model_profile_name() == "small_model_strict":
+            return 1600
+        if self._small_model_profile_name() == "small_model":
+            return 2500
+        return self.DEFAULT_MAX_TOOL_RESULT_CHARS
+
+    def _small_model_profile_name(self):
+        model_name = (self.model or "").lower()
+        if self._matches_model_size(model_name, ("1", "2", "3")):
+            return "small_model_strict"
+        if any(marker in model_name for marker in (" mini", "-mini", "_mini", "small", "tiny", "smol")):
+            return "small_model_strict"
+        if self._matches_model_size(model_name, ("4",)):
+            return "small_model"
+        return "default"
+
+    def _matches_model_size(self, model_name, sizes):
+        pattern = r"(^|[^0-9])({0})b([^0-9]|$)".format("|".join(re.escape(size) for size in sizes))
+        return re.search(pattern, model_name) is not None
 
     def _to_openai_tools(self, tools):
         converted = []

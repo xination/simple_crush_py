@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from .base import BaseTool, ToolError
-from .common import ensure_in_workspace
+from .common import ensure_in_workspace, should_skip_path
 
 
 MAX_MATCHES = 200
@@ -20,14 +20,35 @@ class GrepTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "Search text in files using regex.",
+            "description": (
+                "Search file contents under a workspace-relative directory using regex or literal text. Use this "
+                "when you know a symbol, class name, function name, or phrase, but not the exact file. Prefer "
+                "`grep` to find candidate files, then `view` to read the best match. Do not start paths with `/`. "
+                "Noise directories like `.crush_py`, `.codex`, caches, and `tests` are skipped by default unless "
+                "you explicitly search inside them."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string"},
-                    "path": {"type": "string", "default": "."},
-                    "include": {"type": "string", "default": DEFAULT_INCLUDE},
-                    "literal_text": {"type": "boolean", "default": False},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern, or exact text when `literal_text=true`.",
+                    },
+                    "path": {
+                        "type": "string",
+                        "default": ".",
+                        "description": "Workspace-relative directory path that bounds the search.",
+                    },
+                    "include": {
+                        "type": "string",
+                        "default": DEFAULT_INCLUDE,
+                        "description": "Optional glob filter for filenames, such as `*.py`.",
+                    },
+                    "literal_text": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Set true to match the pattern as plain text instead of regex.",
+                    },
                 },
                 "required": ["pattern"],
             },
@@ -78,6 +99,8 @@ class GrepTool(BaseTool):
     def _search(self, root: Path, include: str, regex: re.Pattern) -> List[Tuple[str, int, int, str]]:
         results = []
         for path in sorted(root.rglob(include)):
+            if should_skip_path(self.workspace_root, root, path):
+                continue
             if not path.is_file():
                 continue
             try:

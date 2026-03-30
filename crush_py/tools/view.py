@@ -20,13 +20,28 @@ class ViewTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "Read a UTF-8 text file with line numbers.",
+            "description": (
+                "Read a UTF-8 text file with line numbers. Use this after you already know the exact file "
+                "path. Always pass a workspace-relative path such as `README.md` or `crush_py/store/session_store.py`. "
+                "Do not start paths with `/`."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer", "default": 0},
-                    "limit": {"type": "integer", "default": DEFAULT_LIMIT},
+                    "path": {
+                        "type": "string",
+                        "description": "Workspace-relative file path. Example: `README.md`.",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "0-based starting line offset for partial reads.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": DEFAULT_LIMIT,
+                        "description": "Maximum number of lines to read in this call.",
+                    },
                 },
                 "required": ["path"],
             },

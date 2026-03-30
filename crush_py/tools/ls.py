@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .base import BaseTool, ToolError
-from .common import ensure_in_workspace
+from .common import ensure_in_workspace, should_skip_path
 
 
 DEFAULT_DEPTH = 2
@@ -18,12 +18,25 @@ class LsTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "List files and directories under a path.",
+            "description": (
+                "List files and directories under a workspace-relative directory path. Use this first when you "
+                "are unsure where something lives. Prefer `ls` for navigation, then `view` for exact files. "
+                "Do not start paths with `/`. Common noise directories like `.crush_py`, `.codex`, caches, and "
+                "`tests` are skipped by default unless you explicitly search inside them."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "default": "."},
-                    "depth": {"type": "integer", "default": DEFAULT_DEPTH},
+                    "path": {
+                        "type": "string",
+                        "default": ".",
+                        "description": "Workspace-relative directory path. Use `.` for the workspace root.",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "default": DEFAULT_DEPTH,
+                        "description": "How many nested directory levels to include.",
+                    },
                 },
             },
         }
@@ -62,6 +75,8 @@ class LsTool(BaseTool):
             raise ToolError("Unable to list directory {0}: {1}".format(current, exc))
 
         for child in children:
+            if should_skip_path(self.workspace_root, current, child):
+                continue
             counter[0] += 1
             if counter[0] > MAX_ENTRIES:
                 return True

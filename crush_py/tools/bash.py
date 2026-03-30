@@ -27,14 +27,33 @@ class BashTool(BaseTool):
     def spec(self) -> Dict[str, Any]:
         return {
             "name": self.name,
-            "description": "Run a shell command inside the workspace root.",
+            "description": (
+                "Run a shell command inside a workspace-relative directory. Use this only when read-only tools are "
+                "not enough. Prefer `ls`, `glob`, `grep`, and `view` for repository inspection. Do not start `cwd` "
+                "with `/`."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"},
-                    "cwd": {"type": "string", "default": "."},
-                    "timeout": {"type": "integer", "default": self.default_timeout},
-                    "confirm": {"type": "boolean", "default": False},
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run with `/bin/bash -lc`.",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "default": ".",
+                        "description": "Workspace-relative working directory. Use `.` for the workspace root.",
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "default": self.default_timeout,
+                        "description": "Maximum runtime in seconds.",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Internal confirmation flag. The runtime sets this after user approval.",
+                    },
                 },
                 "required": ["command"],
             },

@@ -9,6 +9,7 @@ OpenAI-compatible runtime after the local implementation work is done.
 - Confirm that automatic read-only tool-calling works end-to-end.
 - Confirm that automatic `edit` requests work with per-call confirmation.
 - Confirm that `/trace` shows the expected execution flow.
+- Confirm that small local models follow `locate -> view -> answer` consistently.
 
 ## Prerequisites
 
@@ -16,6 +17,11 @@ OpenAI-compatible runtime after the local implementation work is done.
 - The OpenAI-compatible API endpoint is reachable.
 - You know the model identifier exposed by LM Studio.
 - You have this project available on the target machine.
+- Recommended first target family: 3B to 4B local models
+- Example targets:
+  - `google/gemma-3-4b`
+  - `qwen2.5-coder-3b`
+  - other local 3B / 4B models with OpenAI-compatible tool-calling
 
 ## 1. Verify the LM Studio API is reachable
 
@@ -80,15 +86,40 @@ Use prompts that should trigger repo inspection:
 - `Read README.md and summarize the quick start.`
 - `Find where SessionStore is implemented and summarize it.`
 - `Look for the edit tool and explain how it works.`
+- `Find notes.txt and summarize it.`
+- `Find where AgentRuntime is implemented and explain how forced view works.`
 
 Success criteria:
 
 - The model automatically uses `view`, `ls`, `glob`, or `grep`
 - The final answer is reasonable
+- The model does not skip `view` after locating a single likely file
 - `/trace` shows:
   - `tool_use`
   - `tool_result`
   - final assistant stage
+
+## 5.1 Small-model prompt matrix
+
+Run at least these prompt shapes against one or more 3B / 4B local models:
+
+- direct file read:
+  - `Read README.md and summarize the quick start.`
+- locate by filename, then explain:
+  - `Find where SessionStore is implemented and summarize it.`
+- locate by symbol, then explain:
+  - `Look for the edit tool and explain how it works.`
+- repeated locator temptation:
+  - `Find where AgentRuntime is implemented and explain how forced view works.`
+
+Record for each prompt:
+
+- first tool used
+- whether `view` happened before the final answer
+- whether the first located file was correct
+- total tool call count
+- whether the answer guessed before reading
+- any obvious hallucination or path guessing
 
 ## 6. Validate automatic edit with confirmation
 
@@ -162,6 +193,7 @@ After validation, note:
 
 - prompts that worked well
 - prompts that failed
+- prompt shapes that make small models skip or delay `view`
 - any LM Studio format differences
 - any model-specific quirks
 - whether code changes are needed

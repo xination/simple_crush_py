@@ -131,6 +131,79 @@ class OpenAICompatBackendTests(unittest.TestCase):
         with self.assertRaises(BackendError):
             self.backend._parse_turn_response(response)
 
+    def test_to_openai_messages_truncates_long_tool_results(self):
+        messages = [
+            {"role": "user", "content": "Summarize notes.txt"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-1",
+                        "tool_name": "grep",
+                        "content": "x" * (self.backend.DEFAULT_MAX_TOOL_RESULT_CHARS + 50),
+                    },
+                ],
+            },
+        ]
+
+        converted = self.backend._to_openai_messages("system prompt", messages)
+
+        self.assertEqual(converted[2]["role"], "tool")
+        self.assertIn("...[truncated]", converted[2]["content"])
+
+    def test_to_openai_messages_compacts_long_view_results_before_truncating(self):
+        view_body = "\n".join("{0:>6}|line {0}".format(index) for index in range(1, 500))
+        messages = [
+            {"role": "user", "content": "Summarize notes.txt"},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "call-1",
+                        "tool_name": "view",
+                        "content": "<file path=\"notes.txt\">\n{0}\n</file>\nFile has more lines. Use offset >= 500 to continue.".format(view_body),
+                    },
+                ],
+            },
+        ]
+
+        converted = self.backend._to_openai_messages("system prompt", messages)
+
+        self.assertEqual(converted[2]["role"], "tool")
+        self.assertIn("<file path=\"notes.txt\">", converted[2]["content"])
+        self.assertIn("more `view` lines omitted", converted[2]["content"])
+        self.assertIn("File has more lines.", converted[2]["content"])
+
+    def test_effective_max_tokens_is_reduced_for_tool_calls(self):
+        self.backend.max_tokens = 4096
+
+        self.assertEqual(self.backend._effective_max_tokens(None), 4096)
+        self.assertEqual(self.backend._effective_max_tokens([{"name": "view"}]), 1024)
+
+    def test_small_model_budget_is_lower_for_4b_models(self):
+        backend = OpenAICompatBackend(
+            model="google/gemma-3-4b",
+            api_key="test-key",
+            base_url="http://127.0.0.1:1234/v1",
+        )
+
+        self.assertEqual(backend._small_model_profile_name(), "small_model")
+        self.assertEqual(backend._tool_call_token_budget(), 768)
+        self.assertEqual(backend._tool_result_char_budget(), 2500)
+
+    def test_small_model_strict_budget_is_lower_for_3b_models(self):
+        backend = OpenAICompatBackend(
+            model="qwen2.5-coder-3b",
+            api_key="test-key",
+            base_url="http://127.0.0.1:1234/v1",
+        )
+
+        self.assertEqual(backend._small_model_profile_name(), "small_model_strict")
+        self.assertEqual(backend._tool_call_token_budget(), 512)
+        self.assertEqual(backend._tool_result_char_budget(), 1600)
+
 
 if __name__ == "__main__":
     unittest.main()

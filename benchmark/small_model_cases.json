@@ -1,0 +1,46 @@
+{
+  "cases": [
+    {
+      "id": "readme_quick_start",
+      "prompt": "Read README.md and summarize the quick start.",
+      "tags": ["read_only", "direct_read", "summary"],
+      "expected_flow": ["view", "answer"],
+      "notes": "Direct file read. The model should avoid extra locate steps."
+    },
+    {
+      "id": "session_store_locate",
+      "prompt": "Find where SessionStore is implemented and summarize it.",
+      "tags": ["read_only", "locate", "filename_or_symbol", "summary"],
+      "expected_flow": ["glob_or_grep", "view", "answer"],
+      "notes": "Tests locate then read behavior for a known symbol."
+    },
+    {
+      "id": "edit_tool_explain",
+      "prompt": "Look for the edit tool and explain how it works.",
+      "tags": ["read_only", "grep", "explain"],
+      "expected_flow": ["grep", "view", "answer"],
+      "notes": "Useful for catching grep-only answers that skip reading the file."
+    },
+    {
+      "id": "agent_runtime_forced_view",
+      "prompt": "Find where AgentRuntime is implemented and explain how forced view works.",
+      "tags": ["read_only", "locate", "reasoning", "forced_view"],
+      "expected_flow": ["glob_or_grep", "view", "answer"],
+      "notes": "This is a high-risk prompt for path guessing or summarizing before reading."
+    },
+    {
+      "id": "history_trace_compare",
+      "prompt": "Find where /trace output is formatted and explain the difference between /history and /trace.",
+      "tags": ["read_only", "locate", "multi_file", "explain"],
+      "expected_flow": ["grep", "view", "answer"],
+      "notes": "Checks whether the model can navigate nearby implementation details without drifting."
+    },
+    {
+      "id": "small_model_policy",
+      "prompt": "Find where the small-model prompt profiles are defined and summarize the main differences.",
+      "tags": ["read_only", "locate", "small_model", "summary"],
+      "expected_flow": ["grep", "view", "answer"],
+      "notes": "Intended for comparing branches that change prompt profiles or runtime orchestration."
+    }
+  ]
+}
