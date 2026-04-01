@@ -40,7 +40,123 @@ class SessionStoreTests(unittest.TestCase):
             self.assertEqual(len(messages), 2)
             self.assertEqual(messages[0].role, "user")
             self.assertEqual(messages[1].kind, "tool_use")
-            self.assertEqual(messages[1].metadata["raw_content"][0]["text"], "tool output")
+            self.assertEqual(messages[1].metadata["text"], "tool output")
+
+    def test_lean_mode_discards_heavy_trace_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="lean")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "user",
+                "summary only",
+                kind="tool_result",
+                metadata={
+                    "tool_name": "cat",
+                    "tool_arguments": {"path": "notes.txt"},
+                    "tool_use_id": "tool-1",
+                    "summary": "Read notes.txt lines 1-3.",
+                    "raw_content": [{"type": "tool_result", "content": "full text"}],
+                    "backend_content": [{"type": "tool_result", "content": "full text"}],
+                },
+            )
+
+            messages = store.load_messages(session.id)
+
+            self.assertEqual(messages[0].metadata["tool"], "cat")
+            self.assertNotIn("agent", messages[0].metadata)
+            self.assertEqual(messages[0].metadata["summary"], "Read notes.txt lines 1-3.")
+            self.assertNotIn("raw_content", messages[0].metadata)
+            self.assertNotIn("backend_content", messages[0].metadata)
+
+    def test_lean_mode_keeps_agent_trace_label(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="lean")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "assistant",
+                "delegating",
+                kind="tool_use",
+                metadata={
+                    "agent": "planner",
+                    "tool_names": ["reader"],
+                    "assistant_text": "delegating",
+                },
+            )
+
+            messages = store.load_messages(session.id)
+
+            self.assertEqual(messages[0].metadata["agent"], "planner")
+            self.assertEqual(messages[0].metadata["tool"], "reader")
+
+    def test_lean_mode_persists_flat_event_shape_on_disk(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="lean")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "assistant",
+                "",
+                kind="tool_use",
+                metadata={
+                    "agent": "planner",
+                    "tool_calls": [{"id": "tool-1", "name": "grep", "arguments": {"pattern": "needle"}}],
+                },
+            )
+            store.append_message(
+                session.id,
+                "user",
+                "",
+                kind="tool_result",
+                metadata={
+                    "agent": "planner",
+                    "tool_name": "grep",
+                    "summary": "No clear file candidates for `needle`.",
+                },
+            )
+
+            payloads = [
+                json.loads(line)
+                for line in (store.sessions_dir / session.id / "messages.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+
+            self.assertEqual(
+                payloads[0],
+                {"kind": "tool_use", "tool": "grep", "args": {"pattern": "needle"}, "agent": "planner"},
+            )
+            self.assertEqual(
+                payloads[1],
+                {
+                    "kind": "tool_result",
+                    "tool": "grep",
+                    "summary": "No clear file candidates for `needle`.",
+                    "agent": "planner",
+                },
+            )
+
+    def test_debug_mode_keeps_full_trace_fields(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="debug")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "assistant",
+                "tool output",
+                kind="tool_use",
+                metadata={
+                    "assistant_text": "tool output",
+                    "raw_content": [{"type": "text", "text": "tool output"}],
+                },
+            )
+
+            messages = store.load_messages(session.id)
+
+            self.assertIn("raw_content", messages[0].metadata)
 
     def test_list_sessions_sorts_by_updated_at_descending(self):
         with tempfile.TemporaryDirectory() as tmpdir:

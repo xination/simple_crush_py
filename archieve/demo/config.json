@@ -1,0 +1,30 @@
+{
+  "workspace_root": ".",
+  "sessions_dir": ".crush_py/sessions",
+  "default_backend": "lm_studio",
+  "backends": {
+    "lm_studio": {
+      "type": "openai_compat",
+      "model": "google/gemma-3-4b",
+      "base_url": "http://192.168.40.1:1234/v1",
+      "api_key": "not-needed",
+      "timeout": 60,
+      "max_tokens": 4096
+    },
+    "anthropic": {
+      "type": "anthropic",
+      "model": "claude-haiku-4-5-20251001",
+      "base_url": "https://api.anthropic.com",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "timeout": 60,
+      "max_tokens": 4096
+    }
+  },
+  "permissions": {
+    "ask_on_write": false,
+    "ask_on_shell": true
+  },
+  "tools": {
+    "bash_timeout": 60
+  }
+}

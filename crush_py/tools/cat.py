@@ -5,14 +5,14 @@ from .base import BaseTool, ToolError
 from .common import ensure_in_workspace
 
 
-DEFAULT_LIMIT = 200
-MAX_LIMIT = 2000
-MAX_LINE_LENGTH = 2000
+DEFAULT_LIMIT = 80
+MAX_LIMIT = 400
+MAX_LINE_LENGTH = 1600
 MAX_FILE_SIZE = 1024 * 1024
 
 
-class ViewTool(BaseTool):
-    name = "view"
+class CatTool(BaseTool):
+    name = "cat"
 
     def __init__(self, workspace_root: Path):
         self.workspace_root = Path(workspace_root).resolve()
@@ -21,26 +21,19 @@ class ViewTool(BaseTool):
         return {
             "name": self.name,
             "description": (
-                "Read a UTF-8 text file with line numbers. Use this after you already know the exact file "
-                "path. Always pass a workspace-relative path such as `README.md` or `crush_py/store/session_store.py`. "
-                "Do not start paths with `/`."
+                "Read a UTF-8 text file with line numbers. Use this only after you already know the exact "
+                "workspace-relative file path. Supports paged reads via `offset` and `limit`."
             ),
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Workspace-relative file path. Example: `README.md`.",
-                    },
-                    "offset": {
-                        "type": "integer",
-                        "default": 0,
-                        "description": "0-based starting line offset for partial reads.",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": DEFAULT_LIMIT,
-                        "description": "Maximum number of lines to read in this call.",
+                    "path": {"type": "string", "description": "Workspace-relative file path."},
+                    "offset": {"type": "integer", "default": 0},
+                    "limit": {"type": "integer", "default": DEFAULT_LIMIT},
+                    "full": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "If true, ignore offset/limit and read the whole file when it is within size limits.",
                     },
                 },
                 "required": ["path"],
@@ -54,13 +47,10 @@ class ViewTool(BaseTool):
 
         try:
             offset = int(arguments.get("offset", 0) or 0)
-        except (TypeError, ValueError):
-            raise ToolError("`offset` must be an integer. Example: /view FILE 200 50")
-
-        try:
             limit = int(arguments.get("limit", DEFAULT_LIMIT) or DEFAULT_LIMIT)
         except (TypeError, ValueError):
-            raise ToolError("`limit` must be an integer. Example: /view FILE 200 50")
+            raise ToolError("`offset` and `limit` must be integers.")
+        full = bool(arguments.get("full", False))
 
         if offset < 0:
             raise ToolError("`offset` must be >= 0.")
@@ -76,7 +66,7 @@ class ViewTool(BaseTool):
             raise ToolError("File not found: {0}".format(rel_path))
         if abs_path.is_dir():
             raise ToolError("Path is a directory: {0}".format(rel_path))
-        if abs_path.stat().st_size > MAX_FILE_SIZE:
+        if full and abs_path.stat().st_size > MAX_FILE_SIZE:
             raise ToolError("File is too large: {0}".format(rel_path))
 
         try:
@@ -87,14 +77,20 @@ class ViewTool(BaseTool):
         except OSError as exc:
             raise ToolError("Unable to read file {0}: {1}".format(rel_path, exc))
 
-        sliced = lines[offset : offset + limit]
-        has_more = offset + limit < len(lines)
+        if full:
+            offset = 0
+            limit = len(lines)
+            sliced = lines
+        else:
+            sliced = lines[offset : offset + limit]
         body = self._format_lines(sliced, start_line=offset + 1)
-        parts = ["<file path=\"{0}\">".format(rel_path), body, "</file>"]
-        if has_more:
-            parts.append(
-                "File has more lines. Use offset >= {0} to continue.".format(offset + limit)
-            )
+        parts = [
+            '<file path="{0}" offset="{1}" limit="{2}">'.format(rel_path, offset, limit),
+            body,
+            "</file>",
+        ]
+        if not full and offset + limit < len(lines):
+            parts.append("File has more lines. Use offset >= {0} to continue.".format(offset + limit))
         return "\n".join(part for part in parts if part)
 
     def _format_lines(self, lines: List[str], start_line: int) -> str:

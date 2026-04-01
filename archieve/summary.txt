@@ -1,0 +1,225 @@
+📌 crush_py codebase summary
+
+1. 🎯 專案定位
+- `crush_py` 是一個 Python 版、REPL-first 的 terminal coding assistant。
+- 核心目標不是完整重做原本的 Crush，而是保留最小可用工作流：
+  `使用者輸入 -> backend 回答/發 tool call -> 本地工具執行 -> session 存檔`。
+- 目前主力情境是本機或內網 LLM，預設 backend 是 LM Studio 的 OpenAI-compatible API。
+
+2. 🗂️ 目錄結構
+- `crush_py/`
+  - 核心 package。
+- `crush_py/cli.py`
+  - 真正的 CLI 入口，解析 `--config` / `--session` / `--prompt` / `--stream`。
+- `crush_py/repl.py`
+  - REPL 互動層，處理 `/help`、`/view`、`/edit`、`/bash`、`/history`、`/trace` 等指令。
+- `crush_py/agent/runtime.py`
+  - 專案最核心的 orchestration layer。
+- `crush_py/store/session_store.py`
+  - session metadata + message JSONL 持久化。
+- `crush_py/backends/`
+  - backend adapter。
+  - `openai_compat.py`：目前預設與主力。
+  - `anthropic.py`：已可用。
+  - `hf_local.py`：只有 stub，尚未實作。
+- `crush_py/tools/`
+  - 本地工具層。
+  - `ls` / `glob` / `grep` / `view` 是 read-only 核心。
+  - `edit` / `write` / `bash` 是 mutating / exec。
+  - `registry.py` 決定哪些工具暴露給模型。
+- `tests/`
+  - 單元測試，覆蓋 runtime、tools、config、session store、backend parser。
+- `benchmark/`、`scripts/`
+  - small-model benchmark 與比較腳本，屬於 hardening / 評估層，不是主產品流程。
+- `demo/`
+  - 範例工作區。
+
+3. 🚪 啟動入口
+- top-level `cli.py` 和 `__main__.py` 都只是薄 wrapper，最後都進到 `crush_py.cli.main()`。
+- `main()` 做的事情很單純：
+  - 載入 config
+  - 建 `SessionStore`
+  - 建 `AgentRuntime`
+  - 若有 `--session` 就續接
+  - 若有 `--prompt` 就單次問答後退出
+  - 否則進 REPL
+
+4. 🔁 核心執行流程
+- 流程主線在 `crush_py/agent/runtime.py`：
+  - `runtime.ask(prompt)`
+  - 若沒有 active session 就先 `new_session()`
+  - 依 session backend 建立 backend instance
+  - 依 model 名稱決定 prompt/context profile
+  - 把 user message 寫入 `messages.jsonl`
+  - 組裝 backend messages
+  - 若 backend 支援 tool calls，就進 `_ask_with_tool_loop()`
+  - 否則直接單輪回答
+
+5. 🧠 runtime 在做什麼
+- `AgentRuntime` 是整個專案最重要的中樞，職責包含：
+  - backend 選擇
+  - system prompt 選擇
+  - 歷史訊息裁切
+  - tool schema 暴露
+  - tool call loop
+  - edit/bash 的人工確認
+  - tool trace 與最終回答存檔
+- 這層不是在「判斷需求分類」，而是在做 orchestration。
+- 目前有幾個重要 guard：
+  - 小模型用更嚴格 prompt
+  - 只保留較短的歷史訊息
+  - 如果模型先 `glob/grep/ls` 找到唯一候選檔但沒有 `view`，runtime 會主動塞提示，逼它先讀檔再回答
+  - `bash` / `edit` 若同樣失敗重試太多次，會中止 loop
+
+6. 🤖 backend 設計
+- 共用抽象在 `crush_py/backends/base.py`
+  - 核心資料型別：`AssistantTurn`、`ToolCall`
+- `openai_compat.py`
+  - 預設 backend
+  - 呼叫 `/chat/completions`
+  - 支援 text + tool_calls parsing
+  - 會把 tool result 做截斷，避免 payload 太肥
+  - 對小模型再進一步縮 token / result budget
+- `anthropic.py`
+  - 支援 `/v1/messages`
+  - 也支援 tool loop
+- `hf_local.py`
+  - 明確未完成，現在只是拋錯
+
+7. 🛠️ tool 設計
+- `ToolRegistry` 是模型可見工具的總開關。
+- read-only 工具：
+  - `ls`：看目錄樹
+  - `glob`：依檔名 pattern 找檔案
+  - `grep`：依內容找檔案/行
+  - `view`：真正讀檔
+- mutating / exec 工具：
+  - `edit`：精準 replace 舊文字
+  - `write`：整檔覆寫
+  - `bash`：跑 shell
+- 自動工具暴露策略：
+  - 一般「讀 repo / 解釋 code」問題，只暴露 read-only tools
+  - prompt 看起來像修改需求時，才加上 `edit` / `bash`
+  - `write` 目前不給模型自動用，只能 REPL 手動用
+
+8. 🔐 安全邊界與限制
+- 所有 tools 都先用 `ensure_in_workspace()` 限制在 `workspace_root` 內。
+- 但要注意目前 `config.json` 設的是：
+  - `"workspace_root": ".."`
+- 這表示工具可操作範圍其實是 `crush_py` 的上一層資料夾，不只 repo 本身。
+- `ls` / `glob` / `grep` 預設會跳過：
+  - `.git`
+  - `.crush_py`
+  - `.codex`
+  - `tests`
+  - `__pycache__`
+  - 一些 cache / venv 目錄
+- 如果真的要搜 `tests/`，需要明確把 path 指到 `tests`。
+- `edit` / `write` / `bash` 都有 confirmation gate。
+- `bash` 目前硬編碼用 `["/bin/bash", "-lc", command]` 執行。
+  - 這在 Windows repo 中是額外複雜點，也是很合理的簡化候選。
+
+9. 💾 persistence / session 流程
+- `SessionStore` 採 JSON + JSONL，沒有 DB。
+- session 結構：
+  - `.crush_py/sessions/<session_id>/session.json`
+  - `.crush_py/sessions/<session_id>/messages.jsonl`
+  - `.crush_py/sessions/<session_id>/artifacts/`
+- `session.json`
+  - 存 backend / model / title / created_at / updated_at
+- `messages.jsonl`
+  - 存一般對話
+  - 也存 `tool_use`
+  - 也存 `tool_result`
+  - 也存 assistant raw content metadata
+- `runtime._format_history()` / `_format_trace()` 讓 REPL 能看對話與工具軌跡
+
+10. 🧪 測試與 benchmark
+- 測試覆蓋算完整，重點在：
+  - `tests/test_runtime.py`
+  - `tests/test_tools.py`
+  - `tests/test_config.py`
+  - `tests/test_session_store.py`
+  - `tests/test_openai_compat.py`
+- benchmark 相關主要在：
+  - `crush_py/benchmark.py`
+  - `scripts/run_small_model_benchmark.py`
+  - `scripts/compare_benchmark_results.py`
+- benchmark 是為了看小模型 tool routing 穩定性，不是 runtime 必需品。
+
+11. ⭐ 目前真正的核心模組
+- 如果要「保留最小可用 crush_py」，最核心的是：
+  - `crush_py/cli.py`
+  - `crush_py/repl.py`
+  - `crush_py/agent/runtime.py`
+  - `crush_py/store/session_store.py`
+  - `crush_py/backends/base.py`
+  - `crush_py/backends/openai_compat.py`
+  - `crush_py/tools/base.py`
+  - `crush_py/tools/common.py`
+  - `crush_py/tools/registry.py`
+  - `crush_py/tools/ls.py`
+  - `crush_py/tools/glob.py`
+  - `crush_py/tools/grep.py`
+  - `crush_py/tools/view.py`
+- 若目標是「只做 repo 閱讀 assistant」，甚至可以先只留：
+  - read-only tools
+  - 單一 backend
+  - session store
+  - REPL
+
+12. ✂️ 最自然的簡化方向
+- ✅ 先砍未完成/非核心：
+  - `hf_local.py`
+  - benchmark runner / comparator
+  - `demo/`
+  - `NEXT.md` / `LM_STUDIO_CHECKLIST.md` 這類規劃文件可移出核心討論
+- ✅ 若想把產品收斂成「讀 code 助手」：
+  - 停用 `edit`
+  - 停用 `write`
+  - 停用 `bash`
+  - runtime 不再需要 confirmation callback、failure retry guard、mutation prompt routing
+- ✅ 若想把複雜度再降一層：
+  - 只保留 `openai_compat`
+  - 拿掉 `anthropic`
+  - prompt profile 只留一種
+- ✅ 若想把安全邊界更直觀：
+  - 把 `workspace_root` 從 `..` 改回 repo 根目錄
+- ✅ 若想讓架構更單純：
+  - 把 runtime 內的小模型特化規則先減少
+  - 保留最簡單的「tool loop + locate->view->answer」
+
+13. ⚠️ 其他 code agent 接手時要先知道的事
+- 目前 git worktree 不是乾淨的，已存在未提交修改：
+  - `NEXT.md`
+  - `benchmark/README.md`
+  - `crush_py/benchmark.py`
+  - `plan.md`
+  - `run.sh`
+  - `run.tcsh`
+  - `scripts/compare_benchmark_results.py`
+  - `scripts/run_small_model_benchmark.py`
+  - `tests/test_benchmark.py`
+  - `tests/test_compare_benchmark_results.py`
+- 另外也有未追蹤檔案：
+  - `.codex`
+  - `benchmark/results/branch_comparison.json`
+  - `demo/`
+  - `tmp/`
+- 所以後續 agent 若要簡化功能，最好先避開這些正在變動的 benchmark / plan 區域，或先明確決定是否一起清理。
+
+14. 🧭 我對「最值得先簡化哪裡」的判斷
+- 第一優先：
+  - benchmark / compare / multi-run aggregation
+- 第二優先：
+  - `anthropic` + `hf_local` 多 backend 支援
+- 第三優先：
+  - `edit` / `write` / `bash` mutation flow
+- 最後再考慮：
+  - 小模型專用 prompt profile 與 force-view heuristics
+
+15. 🪄 一句話總結
+- 這個 repo 的本質是：
+  - 一個用 `AgentRuntime` 串起 `REPL + Backend + Tools + SessionStore` 的 terminal assistant。
+- 若要簡化，最穩的切法不是重寫，而是：
+  - 先把「非核心能力」一層層移除，只保留 read-only code exploration 的主流程。

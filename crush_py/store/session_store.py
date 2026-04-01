@@ -23,8 +23,9 @@ class SessionMeta:
 
 
 class SessionStore:
-    def __init__(self, sessions_dir: Path):
+    def __init__(self, sessions_dir: Path, trace_mode: str = "lean"):
         self.sessions_dir = Path(sessions_dir)
+        self.trace_mode = trace_mode
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
 
     def create_session(self, backend: str, model: str, title: str = "Untitled Session") -> SessionMeta:
@@ -65,12 +66,13 @@ class SessionStore:
         kind: str = "message",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Message:
+        sanitized_metadata = self._sanitize_metadata(kind, metadata or {})
         message = Message(
             role=role,
             content=content,
             created_at=utc_now_iso(),
             kind=kind,
-            metadata=metadata or {},
+            metadata=sanitized_metadata,
         )
         path = self._session_dir(session_id) / "messages.jsonl"
         with path.open("a", encoding="utf-8") as handle:
@@ -92,7 +94,7 @@ class SessionStore:
                 line = line.strip()
                 if not line:
                     continue
-                messages.append(Message(**json.loads(line)))
+                messages.append(Message.from_dict(json.loads(line)))
         return messages
 
     def _write_meta(self, meta: SessionMeta) -> None:
@@ -103,9 +105,78 @@ class SessionStore:
     def _session_dir(self, session_id: str) -> Path:
         return self.sessions_dir / session_id
 
+    def _sanitize_metadata(self, kind: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
+        if self.trace_mode == "debug":
+            return dict(metadata)
+
+        if kind == "tool_use":
+            tool_name = _first_tool_name(metadata)
+            lean = {
+                "tool": tool_name,
+                "args": _first_tool_args(metadata),
+                "agent": metadata.get("agent", ""),
+                "text": metadata.get("assistant_text", "") or _assistant_text_from_raw_content(metadata.get("raw_content", [])),
+                "__flat__": True,
+            }
+            return {key: value for key, value in lean.items() if value not in ("", {}, None)}
+        if kind == "tool_result":
+            lean = {
+                "tool": metadata.get("tool_name", ""),
+                "summary": metadata.get("summary", ""),
+                "args": dict(metadata.get("tool_arguments", {}) or {}),
+                "agent": metadata.get("agent", ""),
+                "__flat__": True,
+            }
+            if metadata.get("error"):
+                lean["error"] = True
+            if "duration_ms" in metadata:
+                lean["duration_ms"] = metadata["duration_ms"]
+            return {key: value for key, value in lean.items() if value not in ("", None)}
+        return {}
+
 
 def _derive_title(content: str) -> str:
     title = " ".join(content.strip().split())
     if not title:
         return "Untitled Session"
     return title[:60]
+
+
+def _pick_keys(metadata: Dict[str, Any], *keys: str) -> Dict[str, Any]:
+    result = {}
+    for key in keys:
+        if key in metadata:
+            result[key] = metadata[key]
+    return result
+
+
+def _assistant_text_from_raw_content(raw_content: Any) -> str:
+    if not isinstance(raw_content, list):
+        return ""
+    for item in raw_content:
+        if isinstance(item, dict) and item.get("type") == "text":
+            return str(item.get("text", "")).strip()
+    return ""
+
+
+def _first_tool_name(metadata: Dict[str, Any]) -> str:
+    tool_name = str(metadata.get("tool_name", "")).strip()
+    if tool_name:
+        return tool_name
+    tool_calls = metadata.get("tool_calls", [])
+    if tool_calls:
+        return str(tool_calls[0].get("name", "")).strip()
+    tool_names = metadata.get("tool_names", [])
+    if tool_names:
+        return str(tool_names[0]).strip()
+    return ""
+
+
+def _first_tool_args(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    tool_arguments = metadata.get("tool_arguments")
+    if isinstance(tool_arguments, dict):
+        return dict(tool_arguments)
+    tool_calls = metadata.get("tool_calls", [])
+    if tool_calls and isinstance(tool_calls[0].get("arguments"), dict):
+        return dict(tool_calls[0]["arguments"])
+    return {}

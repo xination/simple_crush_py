@@ -1,5 +1,4 @@
 import json
-import re
 from urllib import error, request
 
 from .base import AssistantTurn, BackendError, BaseBackend, ToolCall
@@ -7,8 +6,8 @@ from .base import AssistantTurn, BackendError, BaseBackend, ToolCall
 
 class OpenAICompatBackend(BaseBackend):
     name = "openai_compat"
-    DEFAULT_MAX_TOOL_CALL_TOKENS = 1024
-    DEFAULT_MAX_TOOL_RESULT_CHARS = 4000
+    DEFAULT_MAX_TOOL_CALL_TOKENS = 512
+    DEFAULT_MAX_TOOL_RESULT_CHARS = 1600
 
     def __init__(self, model, api_key, base_url, timeout=60, max_tokens=4096):
         self.model = model
@@ -87,8 +86,6 @@ class OpenAICompatBackend(BaseBackend):
             text = content.strip() if isinstance(content, str) else ""
             tool_calls = []
             raw_content = []
-            if text:
-                raw_content.append({"type": "text", "text": text})
             for tool_call in message.get("tool_calls", []) or []:
                 function = tool_call.get("function", {}) or {}
                 arguments = function.get("arguments", "") or "{}"
@@ -103,6 +100,14 @@ class OpenAICompatBackend(BaseBackend):
                         arguments=parsed_arguments,
                     )
                 )
+            if tool_calls:
+                text = self._squash_tool_call_text(text)
+            elif text:
+                raw_content.append({"type": "text", "text": text})
+            for tool_call in message.get("tool_calls", []) or []:
+                function = tool_call.get("function", {}) or {}
+                arguments = function.get("arguments", "") or "{}"
+                parsed_arguments = json.loads(arguments)
                 raw_content.append(
                     {
                         "type": "tool_use",
@@ -174,14 +179,14 @@ class OpenAICompatBackend(BaseBackend):
 
     def _truncate_tool_result(self, item):
         content = item.get("content", "")
-        if item.get("tool_name") == "view":
-            content = self._compact_view_result(content)
+        if item.get("tool_name") == "cat":
+            content = self._compact_cat_result(content)
         max_tool_result_chars = self._tool_result_char_budget()
         if len(content) <= max_tool_result_chars:
             return content
         return content[: max_tool_result_chars] + "\n...[truncated]"
 
-    def _compact_view_result(self, content):
+    def _compact_cat_result(self, content):
         max_tool_result_chars = self._tool_result_char_budget()
         if len(content) <= max_tool_result_chars:
             return content
@@ -212,18 +217,34 @@ class OpenAICompatBackend(BaseBackend):
                 parts.append(item)
                 used += len(item) + 1
 
-        kept_body_lines = 0
-        for line in body:
-            line_cost = len(line) + 1
-            if used + line_cost > budget:
-                break
-            parts.append(line)
-            used += line_cost
-            kept_body_lines += 1
+        front = []
+        back = []
+        front_used = 0
+        back_used = 0
+        front_index = 0
+        back_index = len(body) - 1
 
+        while front_index <= back_index:
+            take_front = front_used <= back_used
+            candidate = body[front_index] if take_front else body[back_index]
+            line_cost = len(candidate) + 1
+            if used + front_used + back_used + line_cost > budget:
+                break
+            if take_front:
+                front.append(candidate)
+                front_used += line_cost
+                front_index += 1
+            else:
+                back.append(candidate)
+                back_used += line_cost
+                back_index -= 1
+
+        kept_body_lines = len(front) + len(back)
         omitted = len(body) - kept_body_lines
+        parts.extend(front)
         if omitted > 0:
-            parts.append("...[{0} more `view` lines omitted]".format(omitted))
+            parts.append("...[{0} more `cat` lines omitted]".format(omitted))
+        parts.extend(reversed(back))
         if close_tag:
             parts.append(close_tag)
         if continuation:
@@ -236,32 +257,10 @@ class OpenAICompatBackend(BaseBackend):
         return self.max_tokens
 
     def _tool_call_token_budget(self):
-        if self._small_model_profile_name() == "small_model_strict":
-            return 512
-        if self._small_model_profile_name() == "small_model":
-            return 768
         return self.DEFAULT_MAX_TOOL_CALL_TOKENS
 
     def _tool_result_char_budget(self):
-        if self._small_model_profile_name() == "small_model_strict":
-            return 1600
-        if self._small_model_profile_name() == "small_model":
-            return 2500
         return self.DEFAULT_MAX_TOOL_RESULT_CHARS
-
-    def _small_model_profile_name(self):
-        model_name = (self.model or "").lower()
-        if self._matches_model_size(model_name, ("1", "2", "3")):
-            return "small_model_strict"
-        if any(marker in model_name for marker in (" mini", "-mini", "_mini", "small", "tiny", "smol")):
-            return "small_model_strict"
-        if self._matches_model_size(model_name, ("4",)):
-            return "small_model"
-        return "default"
-
-    def _matches_model_size(self, model_name, sizes):
-        pattern = r"(^|[^0-9])({0})b([^0-9]|$)".format("|".join(re.escape(size) for size in sizes))
-        return re.search(pattern, model_name) is not None
 
     def _to_openai_tools(self, tools):
         converted = []
@@ -293,3 +292,6 @@ class OpenAICompatBackend(BaseBackend):
                     continue
                 if text.startswith("data:"):
                     data_lines.append(text[5:].strip())
+
+    def _squash_tool_call_text(self, text):
+        return ""

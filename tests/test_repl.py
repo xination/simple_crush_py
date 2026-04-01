@@ -1,11 +1,7 @@
 import unittest
 from dataclasses import dataclass
 
-from crush_py.repl import (
-    _format_history_message,
-    _format_trace_message,
-    _normalize_bash_command,
-)
+from crush_py.repl import _format_history_message, _format_trace_message
 
 
 @dataclass
@@ -18,15 +14,6 @@ class FakeMessage:
 
 
 class ReplTests(unittest.TestCase):
-    def test_normalize_bash_command_unwraps_single_quoted_command(self):
-        self.assertEqual(_normalize_bash_command('"printf hello"'), "printf hello")
-
-    def test_normalize_bash_command_keeps_shell_quotes_when_needed(self):
-        self.assertEqual(
-            _normalize_bash_command('printf "hello world"'),
-            'printf "hello world"',
-        )
-
     def test_format_trace_message_for_tool_use(self):
         message = FakeMessage(
             role="assistant",
@@ -34,61 +21,56 @@ class ReplTests(unittest.TestCase):
             created_at="2026-03-28T00:00:00+00:00",
             kind="tool_use",
             metadata={
-                "raw_content": [
-                    {"type": "text", "text": "Let me inspect the file first."},
-                    {"type": "tool_use", "name": "view", "input": {"path": "notes.txt"}},
-                ]
+                "tool_names": ["cat"],
+                "assistant_text": "Let me inspect the file first.",
             },
         )
 
         lines = _format_trace_message(message)
 
         self.assertIn("[tool_use] assistant (2026-03-28T00:00:00+00:00)", lines[0])
-        self.assertIn("tool: view", lines[1])
-        self.assertIn("text: Let me inspect the file first.", lines[2])
+        self.assertIn("tool: cat", lines[-2])
+        self.assertIn("text: Let me inspect the file first.", lines[-1])
 
-    def test_format_trace_message_for_tool_result(self):
+    def test_format_trace_message_for_tool_result_prefers_summary(self):
         message = FakeMessage(
             role="user",
             content='<file path="notes.txt"> one two three </file>',
             created_at="2026-03-28T00:00:01+00:00",
             kind="tool_result",
             metadata={
-                "tool_name": "view",
+                "tool_name": "cat",
                 "tool_arguments": {"path": "notes.txt"},
+                "summary": "Read notes.txt lines 1-3. Key excerpts: 1|one ; 2|two ; 3|three",
             },
         )
 
         lines = _format_trace_message(message)
 
         self.assertIn("[tool_result] user (2026-03-28T00:00:01+00:00)", lines[0])
-        self.assertIn("tool: view", lines[1])
-        self.assertIn("arguments: {'path': 'notes.txt'}", lines[2])
-        self.assertIn('result: <file path="notes.txt"> one two three </file>', lines[3])
+        self.assertIn("tool: cat", lines[-3])
+        self.assertIn("arguments: {'path': 'notes.txt'}", lines[-2])
+        self.assertIn("Read notes.txt lines 1-3.", lines[-1])
 
     def test_format_trace_message_for_final_assistant_message(self):
         message = FakeMessage(
             role="assistant",
-            content="The file contains three lines.",
+            content="Confirmed path: notes.txt",
             created_at="2026-03-28T00:00:02+00:00",
             kind="message",
-            metadata={
-                "raw_content": [
-                    {"type": "text", "text": "The file contains three lines."},
-                ]
-            },
+            metadata={},
         )
 
         lines = _format_trace_message(message)
 
         self.assertIn("[message] assistant (2026-03-28T00:00:02+00:00)", lines[0])
-        self.assertIn("stage: assistant_final", lines[1])
-        self.assertIn("text: The file contains three lines.", lines[2])
+        self.assertIn("stage: assistant_final", lines[-2])
+        self.assertIn("text: Confirmed path: notes.txt", lines[-1])
 
     def test_format_history_message_for_user_message(self):
         message = FakeMessage(
             role="user",
-            content="Summarize notes.txt",
+            content="Trace how SessionStore is used",
             created_at="2026-03-28T00:00:03+00:00",
             kind="message",
             metadata={},
@@ -97,7 +79,7 @@ class ReplTests(unittest.TestCase):
         lines = _format_history_message(message)
 
         self.assertIn("[user] (2026-03-28T00:00:03+00:00)", lines[0])
-        self.assertEqual(lines[1], "Summarize notes.txt")
+        self.assertEqual(lines[1], "Trace how SessionStore is used")
 
 
 if __name__ == "__main__":

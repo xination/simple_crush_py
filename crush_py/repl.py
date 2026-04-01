@@ -17,15 +17,14 @@ HELP_TEXT = """Commands:
 /use <session_id>     switch to an existing session
 /backend              show available backends
 /tools                show available tools
-/ls [PATH] [DEPTH]    list directory tree
-/glob PATTERN [PATH]  find files by glob
+/ls [PATH] [DEPTH]    quick listing for a directory area
+/tree [PATH] [DEPTH]  compact tree view for a directory area
+/find PATTERN [PATH]  locate files by filename/path pattern
 /grep PATTERN [PATH] [INCLUDE]
-/bash COMMAND         run a shell command inside workspace
+/outline PATH         compact symbol outline for one code file
+/cat PATH [OFFSET] [LIMIT]
 /history [LIMIT]      show recent conversation messages
 /trace [LIMIT]        show recent tool trace entries
-/write PATH            overwrite a file with multiline input
-/edit PATH             replace one text block with another
-/view PATH            read a file inside workspace
 /quit                 exit
 """
 
@@ -37,20 +36,18 @@ COMMANDS = [
     "/backend",
     "/tools",
     "/ls",
-    "/glob",
+    "/tree",
+    "/find",
     "/grep",
-    "/bash",
+    "/outline",
+    "/cat",
     "/history",
     "/trace",
-    "/write",
-    "/edit",
-    "/view",
     "/quit",
 ]
 
 
 def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
-    runtime.tool_confirmation_callback = _confirm_tool_use
     _setup_readline(runtime)
 
     if runtime.active_session is None:
@@ -93,44 +90,22 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
                 print(name)
             continue
         if raw == "/history" or raw.startswith("/history "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
+            args = _safe_split(raw)
             if len(args) > 2:
                 print("Usage: /history [LIMIT]")
                 continue
-            limit = 20
-            if len(args) == 2:
-                try:
-                    limit = int(args[1])
-                except ValueError:
-                    print("Usage: /history [LIMIT]")
-                    continue
-            if limit <= 0:
-                print("Usage: /history [LIMIT]")
+            limit = _parse_optional_limit(args[1] if len(args) == 2 else None, "Usage: /history [LIMIT]")
+            if limit is None:
                 continue
             print(_format_history(runtime, limit=limit))
             continue
         if raw == "/trace" or raw.startswith("/trace "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
+            args = _safe_split(raw)
             if len(args) > 2:
                 print("Usage: /trace [LIMIT]")
                 continue
-            limit = 20
-            if len(args) == 2:
-                try:
-                    limit = int(args[1])
-                except ValueError:
-                    print("Usage: /trace [LIMIT]")
-                    continue
-            if limit <= 0:
-                print("Usage: /trace [LIMIT]")
+            limit = _parse_optional_limit(args[1] if len(args) == 2 else None, "Usage: /trace [LIMIT]")
+            if limit is None:
                 continue
             print(_format_trace(runtime, limit=limit))
             continue
@@ -144,11 +119,7 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
             print("[session] {0} ({1})".format(session.id, session.backend))
             continue
         if raw == "/ls" or raw.startswith("/ls "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
+            args = _safe_split(raw)
             if len(args) > 3:
                 print("Usage: /ls [PATH] [DEPTH]")
                 continue
@@ -157,34 +128,32 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
                 payload["path"] = args[1]
             if len(args) >= 3:
                 payload["depth"] = args[2]
-            try:
-                print(runtime.run_tool("ls", payload))
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
+            _run_tool_and_print(runtime, "ls", payload)
             continue
-        if raw.startswith("/glob "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
+        if raw == "/tree" or raw.startswith("/tree "):
+            args = _safe_split(raw)
+            if len(args) > 3:
+                print("Usage: /tree [PATH] [DEPTH]")
                 continue
+            payload = {}
+            if len(args) >= 2:
+                payload["path"] = args[1]
+            if len(args) >= 3:
+                payload["depth"] = args[2]
+            _run_tool_and_print(runtime, "tree", payload)
+            continue
+        if raw.startswith("/find "):
+            args = _safe_split(raw)
             if len(args) < 2 or len(args) > 3:
-                print("Usage: /glob PATTERN [PATH]")
+                print("Usage: /find PATTERN [PATH]")
                 continue
             payload = {"pattern": args[1]}
             if len(args) >= 3:
                 payload["path"] = args[2]
-            try:
-                print(runtime.run_tool("glob", payload))
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
+            _run_tool_and_print(runtime, "find", payload)
             continue
         if raw.startswith("/grep "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
+            args = _safe_split(raw)
             if len(args) < 2 or len(args) > 4:
                 print("Usage: /grep PATTERN [PATH] [INCLUDE]")
                 continue
@@ -193,122 +162,29 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
                 payload["path"] = args[2]
             if len(args) >= 4:
                 payload["include"] = args[3]
-            try:
-                print(runtime.run_tool("grep", payload))
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
+            _run_tool_and_print(runtime, "grep", payload)
             continue
-        if raw.startswith("/bash "):
-            command = _normalize_bash_command(raw[len("/bash ") :].strip())
-            if not command:
-                print("Usage: /bash COMMAND")
+        if raw.startswith("/outline "):
+            args = _safe_split(raw)
+            if len(args) < 2 or len(args) > 3:
+                print("Usage: /outline PATH [MAX_ITEMS]")
                 continue
-            if not _confirm_action("Run shell command `{0}`?".format(command)):
-                print("Shell command cancelled.")
-                continue
-            try:
-                print(
-                    runtime.run_tool(
-                        "bash",
-                        {
-                            "command": command,
-                            "confirm": True,
-                        },
-                    )
-                )
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
+            payload = {"path": args[1]}
+            if len(args) >= 3:
+                payload["max_items"] = args[2]
+            _run_tool_and_print(runtime, "get_outline", payload)
             continue
-        if raw.startswith("/view "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
-            if len(args) < 2:
-                print("Usage: /view PATH [OFFSET] [LIMIT]")
-                continue
-            if len(args) > 4:
-                print("Usage: /view PATH [OFFSET] [LIMIT]")
+        if raw.startswith("/cat "):
+            args = _safe_split(raw)
+            if len(args) < 2 or len(args) > 4:
+                print("Usage: /cat PATH [OFFSET] [LIMIT]")
                 continue
             payload = {"path": args[1]}
             if len(args) >= 3:
                 payload["offset"] = args[2]
             if len(args) >= 4:
                 payload["limit"] = args[3]
-            try:
-                print(runtime.run_tool("view", payload))
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
-            continue
-        if raw.startswith("/write "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
-            if len(args) != 2:
-                print("Usage: /write PATH")
-                continue
-            content = _read_multiline_block(
-                "Enter full file content. Finish with a line containing only `.end`."
-            )
-            if content is None:
-                print("Write cancelled.")
-                continue
-            if not _confirm_action("Write file `{0}`?".format(args[1])):
-                print("Write cancelled.")
-                continue
-            try:
-                print(
-                    runtime.run_tool(
-                        "write",
-                        {"path": args[1], "content": content, "confirm": True},
-                    )
-                )
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
-            continue
-        if raw.startswith("/edit "):
-            try:
-                args = shlex.split(raw)
-            except ValueError as exc:
-                print("Command parse error: {0}".format(exc))
-                continue
-            if len(args) != 2:
-                print("Usage: /edit PATH")
-                continue
-            old_text = _read_multiline_block(
-                "Enter old text to replace. Finish with a line containing only `.end`."
-            )
-            if old_text is None:
-                print("Edit cancelled.")
-                continue
-            new_text = _read_multiline_block(
-                "Enter new text. Finish with a line containing only `.end`."
-            )
-            if new_text is None:
-                print("Edit cancelled.")
-                continue
-            replace_all = _confirm_action("Replace all matches?")
-            if not _confirm_action("Edit file `{0}`?".format(args[1])):
-                print("Edit cancelled.")
-                continue
-            try:
-                print(
-                    runtime.run_tool(
-                        "edit",
-                        {
-                            "path": args[1],
-                            "old_text": old_text,
-                            "new_text": new_text,
-                            "replace_all": replace_all,
-                            "confirm": True,
-                        },
-                    )
-                )
-            except ToolError as exc:
-                print("Tool error: {0}".format(exc))
+            _run_tool_and_print(runtime, "cat", payload)
             continue
 
         try:
@@ -319,6 +195,27 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
 
         if not stream:
             print(text)
+
+
+def _run_tool_and_print(runtime: AgentRuntime, tool_name: str, payload: dict) -> None:
+    try:
+        print(runtime.run_tool(tool_name, payload))
+    except ToolError as exc:
+        print("Tool error: {0}".format(exc))
+
+
+def _parse_optional_limit(value, usage):
+    if value is None:
+        return 20
+    try:
+        limit = int(value)
+    except ValueError:
+        print(usage)
+        return None
+    if limit <= 0:
+        print(usage)
+        return None
+    return limit
 
 
 def _setup_readline(runtime: AgentRuntime) -> None:
@@ -342,44 +239,25 @@ def _build_completer(runtime: AgentRuntime):
 
 def _complete_input(runtime: AgentRuntime, buffer_text: str, text: str):
     stripped = buffer_text.lstrip()
-
     if not stripped or (stripped.startswith("/") and " " not in stripped):
         return [item for item in COMMANDS if item.startswith(text)]
 
-    if stripped.startswith("/view "):
-        prefix = stripped.split(" ", 1)[1]
-        return _complete_workspace_paths(runtime, prefix)
-
-    if stripped.startswith("/write "):
-        prefix = stripped.split(" ", 1)[1]
-        return _complete_workspace_paths(runtime, prefix)
-
-    if stripped.startswith("/edit "):
-        prefix = stripped.split(" ", 1)[1]
-        return _complete_workspace_paths(runtime, prefix)
-
+    if stripped.startswith("/cat "):
+        return _complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
     if stripped.startswith("/ls "):
-        prefix = stripped.split(" ", 1)[1]
-        return _complete_workspace_paths(runtime, prefix)
-
-    if stripped.startswith("/glob "):
+        return _complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
+    if stripped.startswith("/tree "):
+        return _complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
+    if stripped.startswith("/find "):
         args = _safe_split(stripped)
-        if len(args) == 2:
-            return _complete_workspace_paths(runtime, "")
         if len(args) >= 3:
             return _complete_workspace_paths(runtime, args[2])
-
     if stripped.startswith("/grep "):
         args = _safe_split(stripped)
-        if len(args) == 2:
-            return _complete_workspace_paths(runtime, "")
         if len(args) >= 3:
             return _complete_workspace_paths(runtime, args[2])
-
     if stripped.startswith("/use "):
-        session_prefix = stripped.split(" ", 1)[1]
-        return _complete_sessions(runtime, session_prefix)
-
+        return _complete_sessions(runtime, stripped.split(" ", 1)[1])
     return []
 
 
@@ -431,18 +309,6 @@ def _safe_split(text: str):
         return text.split()
 
 
-def _normalize_bash_command(command: str) -> str:
-    if not command:
-        return ""
-    try:
-        parts = shlex.split(command)
-    except ValueError:
-        return command
-    if len(parts) == 1:
-        return parts[0]
-    return command
-
-
 def _format_trace(runtime: AgentRuntime, limit: int = 20) -> str:
     session = runtime.active_session
     if session is None:
@@ -453,7 +319,7 @@ def _format_trace(runtime: AgentRuntime, limit: int = 20) -> str:
         if message.kind in ("tool_use", "tool_result"):
             trace_messages.append(message)
             continue
-        if message.kind == "message" and message.role == "assistant" and message.metadata.get("raw_content"):
+        if message.kind == "message" and message.role == "assistant":
             trace_messages.append(message)
     if not trace_messages:
         return "No tool trace entries for this session."
@@ -468,40 +334,53 @@ def _format_trace(runtime: AgentRuntime, limit: int = 20) -> str:
 
 
 def _format_trace_message(message) -> list:
-    lines = [
-        "[{0}] {1} ({2})".format(message.kind, message.role, message.created_at),
-    ]
+    header_parts = ["[{0}]".format(message.kind)]
+    if message.role:
+        header_parts.append(message.role)
+    if message.created_at:
+        header_parts.append("({0})".format(message.created_at))
+    lines = [" ".join(header_parts)]
+    agent = message.metadata.get("agent", "")
+    if agent:
+        lines.append("agent: {0}".format(agent))
     if message.kind == "message":
         text = message.content.strip() if isinstance(message.content, str) else ""
-        raw_content = message.metadata.get("raw_content", [])
         lines.append("stage: assistant_final")
         if text:
             lines.append("text: {0}".format(_single_line(text)))
-        if raw_content:
-            lines.append("raw: {0}".format(_single_line(str(raw_content))))
         return lines
 
     if message.kind == "tool_use":
-        raw_content = message.metadata.get("raw_content", [])
         text = message.content.strip() if isinstance(message.content, str) else ""
-        tool_names = []
-        for item in raw_content:
-            if item.get("type") == "tool_use":
-                tool_names.append(item.get("name", ""))
+        tool_names = list(message.metadata.get("tool_names", []))
+        if not tool_names and message.metadata.get("tool"):
+            tool_names = [message.metadata.get("tool", "")]
+        if not tool_names:
+            raw_content = message.metadata.get("raw_content", [])
+            for item in raw_content:
+                if item.get("type") == "tool_use":
+                    tool_names.append(item.get("name", ""))
+        if not text:
+            text = str(message.metadata.get("assistant_text", "") or message.metadata.get("text", "")).strip()
+        tool_args = message.metadata.get("tool_arguments", {})
+        if not tool_args:
+            tool_args = message.metadata.get("args", {})
         if tool_names:
             lines.append("tool: {0}".format(", ".join(name for name in tool_names if name)))
+        if tool_args:
+            lines.append("arguments: {0}".format(tool_args))
         if text:
             lines.append("text: {0}".format(_single_line(text)))
         return lines
 
-    tool_name = message.metadata.get("tool_name", "")
-    tool_arguments = message.metadata.get("tool_arguments", {})
+    tool_name = message.metadata.get("tool_name", "") or message.metadata.get("tool", "")
+    tool_arguments = message.metadata.get("tool_arguments", {}) or message.metadata.get("args", {})
     if tool_name:
         lines.append("tool: {0}".format(tool_name))
     if tool_arguments:
         lines.append("arguments: {0}".format(tool_arguments))
-    content = message.content if isinstance(message.content, str) else str(message.content)
-    lines.append("result: {0}".format(_single_line(content)))
+    result_text = message.metadata.get("summary", message.content)
+    lines.append("result: {0}".format(_single_line(result_text)))
     return lines
 
 
@@ -540,42 +419,3 @@ def _single_line(text: str, max_length: int = 160) -> str:
     if len(normalized) <= max_length:
         return normalized
     return normalized[:max_length] + " ..."
-
-
-def _read_multiline_block(prompt: str):
-    print(prompt)
-    lines = []
-    while True:
-        try:
-            line = input("... ")
-        except EOFError:
-            print("")
-            return None
-        except KeyboardInterrupt:
-            print("")
-            return None
-        if line == ".end":
-            return "\n".join(lines)
-        lines.append(line)
-
-
-def _confirm_action(prompt: str) -> bool:
-    while True:
-        try:
-            answer = input("{0} [y/N]: ".format(prompt)).strip().lower()
-        except EOFError:
-            print("")
-            return False
-        except KeyboardInterrupt:
-            print("")
-            return False
-        if answer in ("y", "yes"):
-            return True
-        if answer in ("", "n", "no"):
-            return False
-
-
-def _confirm_tool_use(tool_name: str, arguments: dict, preview: str) -> bool:
-    print("[confirm] automatic tool request: {0}".format(tool_name))
-    print(preview)
-    return _confirm_action("Allow this tool call?")

@@ -226,6 +226,7 @@
 - LM Studio checklist
 - read-only tool selection stability
 - context compaction / payload slimming
+- multi-run benchmark runner 與 aggregate comparator
 - 狀態：🟡 進行中
 
 ### Phase 8. HF Local Evaluation
@@ -238,6 +239,82 @@
 
 - Unified diff 形式的 `edit` preview
 - `/trace` 類型過濾與更細的檢視模式
+
+## 🧪 Benchmark Hardening Plan
+
+### 為什麼要加 multi-run
+
+- small local model 的 routing 很容易受微小隨機性影響
+- 單次 benchmark 容易被 lucky run / unlucky run 誤導
+- 我們真正想優化的是：
+  - prompt 與 context engineering 是否讓簡單任務更穩
+  - tool routing 是否更一致
+  - 是否更常在回答前真的去讀對檔案
+
+### Multi-run benchmark runner 目標
+
+- 同一組 benchmark case 可連續跑多輪
+- 每輪仍維持：
+  - 每個 case 使用 fresh session
+  - 保留單輪細節結果，方便事後抽查
+- 額外輸出 aggregate 區塊，讓我們看：
+  - `first_tool` 是否集中
+  - `used_view` 比率是否上升
+  - `tool_call_count` 是否下降或更穩
+  - `locator_tool_count` 是否下降或更穩
+  - error rate 是否下降
+  - final answer 是否出現過多變體
+
+### Aggregate payload 規劃
+
+- benchmark result JSON 保留原本單輪可讀性
+- 當 runner 啟用 multi-run 時，輸出：
+  - `requested_runs`
+  - `completed_runs`
+  - `runs`
+    - 每輪個別 `results`
+    - 每輪摘要
+  - `aggregate`
+    - `overall`
+    - `cases`
+- `aggregate.cases[]` 每個 case 至少包含：
+  - `id`
+  - `run_count`
+  - `success_count`
+  - `error_count`
+  - `error_rate`
+  - `used_view_count`
+  - `used_view_rate`
+  - `first_tool_counts`
+  - `first_tool_mode`
+  - `avg_tool_call_count`
+  - `avg_locator_tool_count`
+  - `answer_variant_count`
+  - `tool_sequence_variant_count`
+
+### Aggregate comparator 目標
+
+- 比較兩份 multi-run aggregate 結果，而不是只比單次 run
+- 主要想回答：
+  - 候選 prompt/runtime 是否讓 `view` 使用率更高？
+  - `first_tool` 是否更集中到合理路徑？
+  - 平均 tool call 是否下降？
+  - error rate 是否下降？
+  - case 的跨輪波動是否變小？
+- comparator 應輸出：
+  - `error_rate_deltas`
+  - `used_view_rate_deltas`
+  - `avg_tool_call_deltas`
+  - `first_tool_mode_changes`
+  - `stability_changes`
+  - `needs_manual_review`
+
+### 實作原則
+
+- 盡量維持 backward compatibility
+- 單輪 runner 與既有 comparator 繼續可用
+- multi-run 與 aggregate 以新增欄位 / 新流程擴充，不破壞既有 JSON consumer
+- metric 保持簡單、可人工驗證，避免過早引入複雜評分公式
 - `/history` 顯示模式擴充
 - `write` 是否納入 automatic tool-calling
 - 更精細的 context compaction / canonicalization

@@ -1,5 +1,4 @@
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,7 +7,7 @@ from crush_py.config import ConfigError, load_config
 
 
 class LoadConfigTests(unittest.TestCase):
-    def test_loads_default_config_when_file_is_missing(self):
+    def test_loads_default_read_helper_config_when_file_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config = load_config(base_dir=tmpdir)
 
@@ -16,13 +15,11 @@ class LoadConfigTests(unittest.TestCase):
             self.assertEqual(config.workspace_root, root)
             self.assertEqual(config.sessions_dir, root / ".crush_py" / "sessions")
             self.assertEqual(config.default_backend, "lm_studio")
-            self.assertIn("anthropic", config.backends)
-            self.assertIn("lm_studio", config.backends)
-            self.assertTrue(config.ask_on_write)
-            self.assertTrue(config.ask_on_shell)
-            self.assertEqual(config.bash_timeout, 60)
+            self.assertEqual(config.trace_mode, "lean")
+            self.assertEqual(sorted(config.backends.keys()), ["lm_studio"])
+            self.assertEqual(config.backends["lm_studio"].type, "openai_compat")
 
-    def test_merges_custom_config_and_resolves_api_key_env(self):
+    def test_merges_custom_config_for_openai_compat_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.json"
             config_path.write_text(
@@ -30,20 +27,13 @@ class LoadConfigTests(unittest.TestCase):
                     {
                         "workspace_root": "workspace",
                         "sessions_dir": "state/sessions",
-                        "default_backend": "anthropic",
-                        "permissions": {
-                            "ask_on_write": False,
-                            "ask_on_shell": False,
-                        },
-                        "tools": {
-                            "bash_timeout": 90
-                        },
+                        "trace_mode": "debug",
                         "backends": {
-                            "anthropic": {
-                                "type": "anthropic",
-                                "model": "fake-model",
-                                "base_url": "https://example.test",
-                                "api_key_env": "TEST_ANTHROPIC_API_KEY",
+                            "lm_studio": {
+                                "type": "openai_compat",
+                                "model": "demo-3b",
+                                "base_url": "http://example.test/v1",
+                                "api_key": "not-needed",
                                 "timeout": 12,
                                 "max_tokens": 345,
                             }
@@ -52,40 +42,41 @@ class LoadConfigTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            original = os.environ.get("TEST_ANTHROPIC_API_KEY")
-            os.environ["TEST_ANTHROPIC_API_KEY"] = "secret-key"
-            try:
-                config = load_config(config_path=str(config_path), base_dir=tmpdir)
-            finally:
-                if original is None:
-                    del os.environ["TEST_ANTHROPIC_API_KEY"]
-                else:
-                    os.environ["TEST_ANTHROPIC_API_KEY"] = original
+
+            config = load_config(config_path=str(config_path), base_dir=tmpdir)
 
             self.assertEqual(config.workspace_root, (Path(tmpdir) / "workspace").resolve())
             self.assertEqual(config.sessions_dir, (Path(tmpdir) / "state" / "sessions").resolve())
-            self.assertFalse(config.ask_on_write)
-            self.assertFalse(config.ask_on_shell)
-            self.assertEqual(config.bash_timeout, 90)
-            self.assertEqual(config.backends["anthropic"].api_key, "secret-key")
-            self.assertEqual(config.backends["anthropic"].timeout, 12)
-            self.assertEqual(config.backends["anthropic"].max_tokens, 345)
+            self.assertEqual(config.trace_mode, "debug")
+            self.assertEqual(config.backends["lm_studio"].model, "demo-3b")
+            self.assertEqual(config.backends["lm_studio"].timeout, 12)
+            self.assertEqual(config.backends["lm_studio"].max_tokens, 345)
 
     def test_raises_when_default_backend_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.json"
             config_path.write_text(
+                json.dumps({"default_backend": "missing"}),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ConfigError):
+                load_config(config_path=str(config_path), base_dir=tmpdir)
+
+    def test_raises_for_non_openai_compat_backends(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "config.json"
+            config_path.write_text(
                 json.dumps(
                     {
-                        "default_backend": "missing",
                         "backends": {
-                            "anthropic": {
+                            "lm_studio": {
                                 "type": "anthropic",
-                                "model": "fake-model",
+                                "model": "demo",
                                 "base_url": "https://example.test",
-                                "api_key": "test-key",
+                                "api_key": "test",
                             }
-                        },
+                        }
                     }
                 ),
                 encoding="utf-8",

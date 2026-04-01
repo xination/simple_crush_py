@@ -1,4 +1,5 @@
 import re
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -6,8 +7,11 @@ from .base import BaseTool, ToolError
 from .common import ensure_in_workspace, should_skip_path
 
 
-MAX_MATCHES = 200
-MAX_LINE_LENGTH = 500
+MAX_MATCHES = 60
+MAX_FILES = 12
+MAX_MATCHES_PER_FILE = 3
+MAX_OUTPUT_CHARS = 3500
+MAX_LINE_LENGTH = 240
 DEFAULT_INCLUDE = "*"
 
 
@@ -22,10 +26,8 @@ class GrepTool(BaseTool):
             "name": self.name,
             "description": (
                 "Search file contents under a workspace-relative directory using regex or literal text. Use this "
-                "when you know a symbol, class name, function name, or phrase, but not the exact file. Prefer "
-                "`grep` to find candidate files, then `view` to read the best match. Do not start paths with `/`. "
-                "Noise directories like `.crush_py`, `.codex`, caches, and `tests` are skipped by default unless "
-                "you explicitly search inside them."
+                "when you know a symbol, class name, function name, or phrase, but not the exact file. Output is "
+                "intentionally capped for small-model context safety."
             ),
             "input_schema": {
                 "type": "object",
@@ -77,27 +79,41 @@ class GrepTool(BaseTool):
         except re.error as exc:
             raise ToolError("Invalid regex pattern: {0}".format(exc))
 
-        matches = self._search(search_root, include, regex)
+        matches, file_count = self._search(search_root, include, regex)
         if not matches:
             return "No matches found."
 
         lines = []
         current_file = None
-        truncated = len(matches) >= MAX_MATCHES
+        per_file_counts = OrderedDict()
         for rel_file, line_no, char_no, line_text in matches:
+            per_file_counts.setdefault(rel_file, 0)
+            per_file_counts[rel_file] += 1
             if rel_file != current_file:
                 if current_file is not None:
                     lines.append("")
                 current_file = rel_file
                 lines.append("{0}:".format(rel_file))
             lines.append("  Line {0}, Char {1}: {2}".format(line_no, char_no, line_text))
-        if truncated:
-            lines.append("")
-            lines.append("Results truncated at {0} matches.".format(MAX_MATCHES))
-        return "\n".join(lines)
+        summary_bits = []
+        if file_count >= MAX_FILES:
+            summary_bits.append("file count reached the cap of {0}".format(MAX_FILES))
+        if len(matches) >= MAX_MATCHES:
+            summary_bits.append("match count reached the cap of {0}".format(MAX_MATCHES))
+        output = "\n".join(lines)
+        if len(output) > MAX_OUTPUT_CHARS:
+            output = output[:MAX_OUTPUT_CHARS] + "\n...[truncated]"
+            summary_bits.append("output size reached the small-model budget")
+        if summary_bits:
+            output += (
+                "\n\nSearch was capped because {0}. Narrow the search by file extension, folder, or a more "
+                "specific symbol before using `cat`.".format(", ".join(summary_bits))
+            )
+        return output
 
-    def _search(self, root: Path, include: str, regex: re.Pattern) -> List[Tuple[str, int, int, str]]:
+    def _search(self, root: Path, include: str, regex: re.Pattern) -> Tuple[List[Tuple[str, int, int, str]], int]:
         results = []
+        files_with_matches = OrderedDict()
         for path in sorted(root.rglob(include)):
             if should_skip_path(self.workspace_root, root, path):
                 continue
@@ -108,6 +124,7 @@ class GrepTool(BaseTool):
             except ValueError:
                 continue
             try:
+                file_match_count = 0
                 with path.open("r", encoding="utf-8") as handle:
                     for line_no, raw_line in enumerate(handle, start=1):
                         match = regex.search(raw_line)
@@ -116,9 +133,15 @@ class GrepTool(BaseTool):
                         line_text = raw_line.rstrip("\n").rstrip("\r")
                         if len(line_text) > MAX_LINE_LENGTH:
                             line_text = line_text[:MAX_LINE_LENGTH] + "..."
+                        files_with_matches.setdefault(rel_file, True)
                         results.append((rel_file, line_no, match.start() + 1, line_text))
+                        file_match_count += 1
+                        if len(files_with_matches) >= MAX_FILES:
+                            return results, len(files_with_matches)
+                        if file_match_count >= MAX_MATCHES_PER_FILE:
+                            break
                         if len(results) >= MAX_MATCHES:
-                            return results
+                            return results, len(files_with_matches)
             except (UnicodeDecodeError, OSError):
                 continue
-        return results
+        return results, len(files_with_matches)
