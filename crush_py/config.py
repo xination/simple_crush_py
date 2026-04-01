@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import Dict, Optional
 
 
-DEFAULT_ANTHROPIC_BASE_URL = "https://api.anthropic.com"
-DEFAULT_ANTHROPIC_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_OPENAI_COMPAT_BASE_URL = "http://192.168.40.1:1234/v1"
 DEFAULT_OPENAI_COMPAT_MODEL = "google/gemma-3-4b"
 
@@ -32,10 +30,8 @@ class AppConfig:
     workspace_root: Path
     sessions_dir: Path
     default_backend: str
+    trace_mode: str
     backends: Dict[str, BackendConfig]
-    ask_on_write: bool
-    ask_on_shell: bool
-    bash_timeout: int
 
 
 def _default_config_dict() -> dict:
@@ -43,30 +39,16 @@ def _default_config_dict() -> dict:
         "workspace_root": ".",
         "sessions_dir": ".crush_py/sessions",
         "default_backend": "lm_studio",
+        "trace_mode": "lean",
         "backends": {
-            "anthropic": {
-                "type": "anthropic",
-                "model": DEFAULT_ANTHROPIC_MODEL,
-                "base_url": DEFAULT_ANTHROPIC_BASE_URL,
-                "api_key_env": "ANTHROPIC_API_KEY",
-                "timeout": 60,
-                "max_tokens": 4096,
-            },
             "lm_studio": {
                 "type": "openai_compat",
                 "model": DEFAULT_OPENAI_COMPAT_MODEL,
                 "base_url": DEFAULT_OPENAI_COMPAT_BASE_URL,
                 "api_key": "not-needed",
                 "timeout": 60,
-                "max_tokens": 4096,
-            },
-        },
-        "permissions": {
-            "ask_on_write": True,
-            "ask_on_shell": True,
-        },
-        "tools": {
-            "bash_timeout": 60,
+                "max_tokens": 2048,
+            }
         },
     }
 
@@ -113,17 +95,22 @@ def load_config(config_path: Optional[str] = None, base_dir: Optional[str] = Non
     default_backend = raw.get("default_backend", "lm_studio")
     if default_backend not in backends:
         raise ConfigError("Default backend `{0}` is not configured.".format(default_backend))
+    if default_backend != "lm_studio":
+        raise ConfigError("Only `lm_studio` is supported in this version.")
+    for backend in backends.values():
+        if backend.type != "openai_compat":
+            raise ConfigError(
+                "Unsupported backend type `{0}`. Only `openai_compat` is supported.".format(
+                    backend.type
+                )
+            )
 
-    permissions = raw.get("permissions", {})
-    tools = raw.get("tools", {})
     return AppConfig(
         workspace_root=workspace_root,
         sessions_dir=sessions_dir,
         default_backend=default_backend,
+        trace_mode=str(raw.get("trace_mode", "lean")),
         backends=backends,
-        ask_on_write=bool(permissions.get("ask_on_write", True)),
-        ask_on_shell=bool(permissions.get("ask_on_shell", True)),
-        bash_timeout=int(tools.get("bash_timeout", 60)),
     )
 
 
