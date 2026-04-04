@@ -1,6 +1,7 @@
 import io
 import json
 import unittest
+from unittest.mock import patch
 
 from crush_py.backends.base import BackendError
 from crush_py.backends.openai_compat import OpenAICompatBackend
@@ -12,6 +13,9 @@ class FakeHTTPResponse:
 
     def read(self):
         return self._stream.read()
+
+    def readline(self):
+        return self._stream.readline()
 
     def __enter__(self):
         return self
@@ -182,6 +186,77 @@ class OpenAICompatBackendTests(unittest.TestCase):
         self.assertEqual(self.backend._effective_max_tokens(None), 4096)
         self.assertEqual(self.backend._effective_max_tokens([{"name": "cat"}]), 512)
         self.assertEqual(self.backend._tool_result_char_budget(), 1600)
+
+    def test_stream_generate_turn_reconstructs_split_tool_call_arguments(self):
+        sse_payload = "\n\n".join(
+            [
+                "data: " + json.dumps({"choices": [{"delta": {"content": "Let me inspect that. "}}]}),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "id": "call-1",
+                                            "function": {"name": "cat", "arguments": '{"path": "notes'},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: "
+                + json.dumps(
+                    {
+                        "choices": [
+                            {
+                                "delta": {
+                                    "tool_calls": [
+                                        {
+                                            "index": 0,
+                                            "function": {"arguments": '.txt"}'},
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ),
+                "data: [DONE]",
+                "",
+            ]
+        )
+        response = FakeHTTPResponse({})
+        response._stream = io.BytesIO(sse_payload.encode("utf-8"))
+
+        with patch.object(self.backend, "_request", return_value=response):
+            turn = self.backend.stream_generate_turn("system prompt", [])
+
+        self.assertEqual(turn.text, "")
+        self.assertEqual(len(turn.tool_calls), 1)
+        self.assertEqual(turn.tool_calls[0].name, "cat")
+        self.assertEqual(turn.tool_calls[0].arguments, {"path": "notes.txt"})
+        self.assertEqual(turn.raw_content[0]["type"], "text")
+        self.assertEqual(turn.raw_content[1]["type"], "tool_use")
+
+    def test_stream_generate_turn_supports_list_based_content_chunks(self):
+        sse_payload = (
+            'data: {"choices":[{"delta":{"content":[{"type":"output_text","text":"Hello "}]}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":[{"type":"text","text":"world"}]}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        response = FakeHTTPResponse({})
+        response._stream = io.BytesIO(sse_payload.encode("utf-8"))
+
+        with patch.object(self.backend, "_request", return_value=response):
+            turn = self.backend.stream_generate_turn("system prompt", [])
+
+        self.assertEqual(turn.text, "Hello world")
+        self.assertEqual(turn.tool_calls, [])
 
 
 if __name__ == "__main__":

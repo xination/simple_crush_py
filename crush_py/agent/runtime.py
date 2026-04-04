@@ -1,5 +1,9 @@
 import re
+import sys
+import threading
+import time
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
@@ -83,34 +87,67 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         messages = self._messages_for_backend(session.id)
         system_prompt = self._system_prompt_for_prompt(prompt)
 
-        if backend.supports_tool_calls():
-            text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt, stream=stream)
-            text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
-        elif stream:
-            chunks = []
-            for chunk in backend.stream_generate(system_prompt, messages):
-                chunks.append(chunk)
-                print(chunk, end="", flush=True)
-            print("")
-            text = sanitize_text("".join(chunks)).strip()
-            self.session_store.append_message(
-                session.id,
-                "assistant",
-                text,
-                metadata={"raw_content": [{"type": "text", "text": text}]},
-            )
-        else:
-            turn = self._generate_turn_with_retry(backend, system_prompt, messages)
-            text = sanitize_text(turn.text).strip()
-            self.session_store.append_message(
-                session.id,
-                "assistant",
-                text,
-                metadata={"raw_content": sanitize_content(turn.raw_content)},
-            )
+        with self._thinking_indicator(enabled=stream):
+            if backend.supports_tool_calls():
+                text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt, stream=stream)
+                text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
+            elif stream:
+                chunks = []
+                for chunk in backend.stream_generate(system_prompt, messages):
+                    chunks.append(chunk)
+                    print(chunk, end="", flush=True)
+                print("")
+                text = sanitize_text("".join(chunks)).strip()
+                self.session_store.append_message(
+                    session.id,
+                    "assistant",
+                    text,
+                    metadata={"raw_content": [{"type": "text", "text": text}]},
+                )
+            else:
+                turn = self._generate_turn_with_retry(backend, system_prompt, messages)
+                text = sanitize_text(turn.text).strip()
+                self.session_store.append_message(
+                    session.id,
+                    "assistant",
+                    text,
+                    metadata={"raw_content": sanitize_content(turn.raw_content)},
+                )
 
         self.active_session = self.session_store.load_session(session.id)
         return text
+
+    @contextmanager
+    def _thinking_indicator(self, enabled: bool = False):
+        stream = getattr(sys, "stdout", None)
+        if not enabled or stream is None:
+            yield
+            return
+        isatty = getattr(stream, "isatty", None)
+        if not callable(isatty) or not isatty():
+            yield
+            return
+
+        stop_event = threading.Event()
+        thread = threading.Thread(target=self._run_thinking_spinner, args=(stream, stop_event), daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            stop_event.set()
+            thread.join(timeout=0.2)
+            stream.write("\r" + (" " * 24) + "\r")
+            stream.flush()
+
+    def _run_thinking_spinner(self, stream, stop_event):
+        frames = ("[thinking   ]", "[thinking.  ]", "[thinking.. ]", "[thinking...]")
+        index = 0
+        while not stop_event.is_set():
+            stream.write("\r" + frames[index % len(frames)])
+            stream.flush()
+            if stop_event.wait(0.18):
+                break
+            index += 1
 
     def available_backends(self) -> List[str]:
         return sorted(self.config.backends.keys())
@@ -231,6 +268,9 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             final_text = sanitize_text(turn.text).strip()
             final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
             if not turn.tool_calls:
+                if stream and final_text:
+                    print(final_text, end="", flush=True)
+                    print("")
                 self.session_store.append_message(
                     session_id,
                     "assistant",
@@ -538,25 +578,24 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             for candidate_messages in attempts:
                 try:
                     if stream:
-                        chunks = []
-                        for chunk in backend.stream_generate(system_prompt, candidate_messages, tools=tools):
-                            chunks.append(chunk)
-                            print(chunk, end="", flush=True)
-
-                        if chunks:
-                            print("")
-                            text = "".join(chunks)
+                        turn = backend.stream_generate_turn(system_prompt, candidate_messages, tools=tools)
+                        text = sanitize_text(turn.text)
+                        if text:
                             return AssistantTurn(
-                                text=sanitize_text(text),
-                                tool_calls=[],
-                                raw_content=[{"type": "text", "text": text}],
+                                text=text,
+                                tool_calls=turn.tool_calls,
+                                raw_content=sanitize_content(turn.raw_content or self._assistant_text_blocks(turn)),
                             )
-                        # No chunks? Likely a tool call or empty response. Proceed to generate_turn.
+                        if turn.tool_calls:
+                            return AssistantTurn(
+                                text="",
+                                tool_calls=turn.tool_calls,
+                                raw_content=sanitize_content(turn.raw_content),
+                            )
+                        # Empty streamed turn? Proceed to generate_turn.
 
                     turn = backend.generate_turn(system_prompt, candidate_messages, tools=tools)
                     text = sanitize_text(turn.text)
-                    if stream and text:
-                        print(text)
                     return AssistantTurn(
                         text=text,
                         tool_calls=turn.tool_calls,

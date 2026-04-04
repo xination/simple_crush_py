@@ -50,6 +50,20 @@ class BaseBackend(ABC):
     ) -> AssistantTurn:
         return AssistantTurn(text=self.generate(system_prompt, messages, tools=tools))
 
+    def stream_generate_turn(
+        self,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[dict]] = None,
+    ) -> AssistantTurn:
+        text = "".join(self.stream_generate(system_prompt, messages, tools=tools))
+        if not text:
+            return AssistantTurn()
+        return AssistantTurn(
+            text=text,
+            raw_content=[{"type": "text", "text": text}],
+        )
+
     def generate_with_metadata(
         self,
         system_prompt: str,

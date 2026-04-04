@@ -125,10 +125,12 @@ class SessionStore:
             }
             return {key: value for key, value in lean.items() if value not in ("", {}, None)}
         if kind == "tool_result":
+            tool_name = metadata.get("tool_name", "") or metadata.get("tool", "")
+            tool_arguments = metadata.get("tool_arguments", {}) or metadata.get("args", {})
             lean = {
-                "tool": metadata.get("tool_name", ""),
+                "tool": tool_name,
                 "summary": sanitize_text(metadata.get("summary", "")),
-                "args": dict(metadata.get("tool_arguments", {}) or {}),
+                "args": dict(tool_arguments) if isinstance(tool_arguments, dict) else {},
                 "agent": metadata.get("agent", ""),
                 "encoding": metadata.get("encoding_used", ""),
                 "__flat__": True,

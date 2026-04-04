@@ -1,12 +1,15 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from crush_py.agent.runtime import AgentRuntime
 from crush_py.backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from crush_py.config import AppConfig, BackendConfig
 from crush_py.repl import _format_history, _format_trace
+from crush_py.repl_commands import try_handle_command
 from crush_py.store.session_store import SessionStore
 
 
@@ -32,6 +35,116 @@ class FakeCatLoopBackend(BaseBackend):
                 ],
             )
         return AssistantTurn(text="Confirmed path: notes.txt\nUnconfirmed branches: none\nNext step: none")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeStreamingToolCallBackend(BaseBackend):
+    def __init__(self):
+        self.turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def stream_generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        if self.turn_count == 1:
+            return AssistantTurn(
+                text="I will inspect the file first.",
+                tool_calls=[ToolCall(id="tool-1", name="cat", arguments={"path": "notes.txt"})],
+                raw_content=[
+                    {"type": "text", "text": "I will inspect the file first."},
+                    {"type": "tool_use", "id": "tool-1", "name": "cat", "input": {"path": "notes.txt"}},
+                ],
+            )
+        return AssistantTurn(text="Confirmed path: notes.txt\nUnconfirmed branches: none\nNext step: none")
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        raise AssertionError("stream_generate_turn should be used when stream=True")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeHistoryAwareBackend(BaseBackend):
+    def __init__(self):
+        self.messages_seen = None
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.messages_seen = list(messages)
+        return AssistantTurn(text="Likely matches from history-aware search: run.sh, run.tcsh")
+
+
+class FakePlannerUsesRealToolsBackend(BaseBackend):
+    def __init__(self):
+        self.planner_turn_count = 0
+        self.reader_turn_count = 0
+        self.planner_messages = []
+        self.reader_messages = []
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_turn_count += 1
+            self.reader_messages.append(list(messages))
+            if self.reader_turn_count == 1:
+                return AssistantTurn(
+                    text="I found one likely match and will read it.",
+                    tool_calls=[ToolCall(id="reader-cat-1", name="cat", arguments={"path": "run.sh"})],
+                    raw_content=[
+                        {"type": "text", "text": "I found one likely match and will read it."},
+                        {"type": "tool_use", "id": "reader-cat-1", "name": "cat", "input": {"path": "run.sh"}},
+                    ],
+                )
+            return AssistantTurn(
+                text=(
+                    "Confirmed path: run.sh\n"
+                    "Summary: the file is a shell script that contains `#!/bin/sh` and prints hello.\n"
+                    "Evidence: 1|#!/bin/sh ; 2|echo hello\n"
+                    "Unresolved uncertainty: none"
+                )
+            )
+
+        self.planner_turn_count += 1
+        self.planner_messages.append(list(messages))
+        if self.planner_turn_count == 1:
+            return AssistantTurn(
+                text="I will search file contents for the requested string.",
+                tool_calls=[
+                    ToolCall(
+                        id="grep-1",
+                        name="grep",
+                        arguments={"pattern": "sh", "path": ".", "include": "*", "literal_text": True},
+                    )
+                ],
+                raw_content=[
+                    {"type": "text", "text": "I will search file contents for the requested string."},
+                    {
+                        "type": "tool_use",
+                        "id": "grep-1",
+                        "name": "grep",
+                        "input": {"pattern": "sh", "path": ".", "include": "*", "literal_text": True},
+                    },
+                ],
+            )
+        return AssistantTurn(
+            text="The file containing 'sh' is run.sh. It contains a shell shebang and an echo command."
+        )
 
     def supports_tool_calls(self):
         return True
@@ -792,6 +905,40 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(messages[3].content, "")
             self.assertIn("Read `notes.txt` lines 1-3.", messages[3].metadata["summary"])
             self.assertEqual(messages[4].metadata["tool"], "reader")
+
+    def test_streaming_tool_turn_keeps_tool_loop_instead_of_returning_early(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            runtime._create_backend = lambda backend_cfg: FakeStreamingToolCallBackend()
+
+            result = runtime.ask("Trace notes.txt", stream=True)
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertIn("Confirmed path: notes.txt", result)
+            self.assertEqual([message.kind for message in messages], ["message", "tool_use", "tool_use", "tool_result", "tool_result", "message"])
+
+    def test_streaming_only_prints_final_answer_not_tool_loop_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            runtime._create_backend = lambda backend_cfg: FakeStreamingToolCallBackend()
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = runtime.ask("Trace notes.txt", stream=True)
+
+            rendered = stdout.getvalue()
+            self.assertIn("Confirmed path: notes.txt", result)
+            self.assertIn("Confirmed path: notes.txt", rendered)
+            self.assertNotIn("I will inspect the file first.", rendered)
+            self.assertNotIn("[thinking", rendered)
 
     def test_format_trace_reads_recent_tool_entries(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1570,6 +1717,70 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIn("Reader summary for `notes.txt`", rendered)
             self.assertNotIn('<file path="notes.txt"', rendered)
             self.assertNotIn("I will read the file first.", rendered)
+
+    def test_repl_tree_command_history_is_available_to_next_natural_language_turn(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+            (workspace / "run.tcsh").write_text("echo hi\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeHistoryAwareBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+            runtime.new_session()
+
+            tree_stdout = io.StringIO()
+            with redirect_stdout(tree_stdout):
+                handled, exit_code = try_handle_command(runtime, "/tree . 2")
+
+            self.assertTrue(handled)
+            self.assertIsNone(exit_code)
+            self.assertIn("run.sh", tree_stdout.getvalue())
+
+            result = runtime.ask("find the file with string 'sh' ")
+            rendered = json.dumps(backend.messages_seen, ensure_ascii=False)
+
+            self.assertIn("run.sh", result)
+            self.assertIn("/tree . 2", rendered)
+            self.assertIn('"tool_name": "tree"', rendered)
+            self.assertIn("Directory overview gathered for `.`.", rendered)
+            self.assertIn("find the file with string 'sh'", rendered)
+
+    def test_repl_tree_then_prompt_runs_planner_search_and_reader_cat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "run.sh").write_text("#!/bin/sh\necho hello\n", encoding="utf-8")
+            (workspace / "run.tcsh").write_text("echo hello\n", encoding="utf-8")
+            (workspace / "notes.txt").write_text("plain text only\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakePlannerUsesRealToolsBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+            runtime.new_session()
+
+            with redirect_stdout(io.StringIO()):
+                handled, exit_code = try_handle_command(runtime, "/tree . 2")
+
+            self.assertTrue(handled)
+            self.assertIsNone(exit_code)
+
+            result = runtime.ask("find the file with string 'sh'")
+            messages = store.load_messages(runtime.active_session.id)
+            tool_use_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_use"]
+            tool_result_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_result"]
+            planner_rendered = json.dumps(backend.planner_messages[0], ensure_ascii=False)
+
+            self.assertIn("run.sh", result)
+            self.assertIn("grep", tool_use_names)
+            self.assertIn("reader", tool_use_names)
+            self.assertIn("cat", tool_use_names)
+            self.assertIn("tree", tool_result_names)
+            self.assertIn("grep", tool_result_names)
+            self.assertIn("cat", tool_result_names)
+            self.assertIn("reader", tool_result_names)
+            self.assertIn("/tree . 2", planner_rendered)
+            self.assertIn("Directory overview gathered for `.`.", planner_rendered)
 
     def test_reader_can_use_up_to_three_tool_calls_before_forced_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:

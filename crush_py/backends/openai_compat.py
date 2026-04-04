@@ -2,6 +2,7 @@ import json
 from urllib import error, request
 
 from .base import AssistantTurn, BackendError, BaseBackend, ToolCall
+from ..output_sanitize import sanitize_text
 
 
 class OpenAICompatBackend(BaseBackend):
@@ -28,7 +29,17 @@ class OpenAICompatBackend(BaseBackend):
         return self.generate_turn(system_prompt, messages, tools=tools)
 
     def stream_generate(self, system_prompt, messages, tools=None):
+        turn = self.stream_generate_turn(system_prompt, messages, tools=tools)
+        if turn.tool_calls:
+            return
+        if turn.text:
+            yield turn.text
+
+    def stream_generate_turn(self, system_prompt, messages, tools=None):
         response = self._request(system_prompt=system_prompt, messages=messages, stream=True, tools=tools)
+        text_parts = []
+        tool_call_deltas = {}
+        raw_content = []
         for payload in self._iter_sse_payloads(response):
             if payload == "[DONE]":
                 break
@@ -36,11 +47,64 @@ class OpenAICompatBackend(BaseBackend):
                 body = json.loads(payload)
                 choices = body.get("choices", [])
                 delta = choices[0].get("delta", {})
-                text = delta.get("content", "")
             except (ValueError, AttributeError, IndexError, KeyError) as exc:
                 raise BackendError("OpenAI-compatible streaming payload was invalid: {0}".format(exc))
-            if text:
-                yield text
+
+            for text in self._iter_delta_text(delta):
+                if text:
+                    text_parts.append(text)
+
+            for tool_delta in delta.get("tool_calls", []) or []:
+                index = tool_delta.get("index")
+                if index is None:
+                    index = len(tool_call_deltas)
+                entry = tool_call_deltas.setdefault(
+                    index,
+                    {
+                        "id": "",
+                        "name": "",
+                        "arguments_parts": [],
+                    },
+                )
+                if tool_delta.get("id"):
+                    entry["id"] = tool_delta.get("id")
+                function = tool_delta.get("function", {}) or {}
+                if function.get("name"):
+                    entry["name"] = function.get("name")
+                if function.get("arguments"):
+                    entry["arguments_parts"].append(function.get("arguments"))
+
+        text = sanitize_text("".join(text_parts)).strip()
+        tool_calls = []
+        if text:
+            raw_content.append({"type": "text", "text": text})
+
+        for index in sorted(tool_call_deltas):
+            entry = tool_call_deltas[index]
+            arguments_raw = "".join(entry["arguments_parts"]) or "{}"
+            try:
+                parsed_arguments = json.loads(arguments_raw)
+            except ValueError as exc:
+                raise BackendError("OpenAI-compatible tool call arguments were invalid JSON: {0}".format(exc))
+            tool_call = ToolCall(
+                id=entry["id"],
+                name=entry["name"],
+                arguments=parsed_arguments,
+            )
+            tool_calls.append(tool_call)
+            raw_content.append(
+                {
+                    "type": "tool_use",
+                    "id": tool_call.id,
+                    "name": tool_call.name,
+                    "input": parsed_arguments,
+                }
+            )
+
+        if tool_calls:
+            text = self._squash_tool_call_text(text)
+
+        return AssistantTurn(text=text, tool_calls=tool_calls, raw_content=raw_content)
 
     def _request(self, system_prompt, messages, stream, tools=None):
         payload = {
@@ -292,6 +356,19 @@ class OpenAICompatBackend(BaseBackend):
                     continue
                 if text.startswith("data:"):
                     data_lines.append(text[5:].strip())
+
+    def _iter_delta_text(self, delta):
+        content = delta.get("content", "")
+        if isinstance(content, str):
+            if content:
+                yield content
+            return
+        if isinstance(content, list):
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") in ("text", "output_text") and item.get("text"):
+                    yield item.get("text")
 
     def _squash_tool_call_text(self, text):
         return ""
