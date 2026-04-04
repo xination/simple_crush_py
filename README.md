@@ -8,7 +8,6 @@
 - 🧵 主要任務是：
   - instruction Q&A
   - Python code tracing
-  - C++ code tracing
 - 🧠 設計重點不是功能很多，而是：
   - tool 選擇要少
   - context 要穩
@@ -36,7 +35,6 @@
 
 - 💬「這個 repo 的主要結構是什麼？」
 - 💬「幫我 trace Python 裡 `main()` 之後呼叫了哪些函式。」
-- 💬「幫我找 C++ 裡 `trace_me` 的定義與呼叫點。」
 - 💬「這個設定值在哪裡被讀取？」
 - 💬「請根據實際檔案內容回答，不確定的地方要明說。」
 
