@@ -20,6 +20,7 @@
 - `tree`
 - `find`
 - `grep`
+- `get_outline`
 - `cat`
 
 這些工具的預期流程是：
@@ -27,8 +28,9 @@
 1. `tree` / `ls` 看區域
 2. `find` 找檔
 3. `grep` 找符號或字串
-4. `cat` 讀檔
-5. 再回答
+4. `get_outline` 確認 symbol 範圍
+5. `cat` 讀局部區塊
+6. 再回答
 
 ## 🔍 適合的問法
 
@@ -58,6 +60,79 @@ python -m crush_py --summarize-brief README.md
 - `--summarize`：direct-file summary 會走 `review draft mode`
 - `--summarize-brief`：direct-file summary 會走 `brief summary mode`
 - `--prompt "quickly summarize README.md"` 也會走 `brief summary mode`
+
+### CLI trace 用法
+
+```bash
+python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
+python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
+```
+
+- `variable trace` 目前會優先輸出：
+  - `Variable`
+  - `Confirmed file`
+  - `Coverage`
+  - evidence-backed sections
+- `flow trace` 目前會優先輸出：
+  - `Target`
+  - `Confirmed file`
+  - `Coverage`
+  - `Reviewed symbol`
+  - `Reviewed lines`
+  - evidence-backed flow sections
+
+## 🧾 Trace 報告風格
+
+- ✅ 盡量使用 qualname，例如 `SessionStore.create_session`、`AgentRuntime.ask`
+- ✅ `Coverage` 會明確標示是不是只看了 local reviewed block
+- ✅ `flow trace` 會區分：
+  - entry point
+  - local transformation
+  - storage or persistence
+  - downstream handoff
+- ✅ 最後會保留 `Unresolved uncertainty`
+- ❌ 不做跨函式 dataflow 幻覺推論
+- ❌ 不把自然語言摘要寫得比證據更大聲
+
+### 範例：variable trace
+
+```text
+Variable trace for human review:
+
+Variable: session_id
+Confirmed file: crush_py/store/session_store.py
+Coverage: local (reviewed `SessionStore.create_session` block only)
+
+1. Defined or first assigned at line 32 inside `SessionStore.create_session`
+   Evidence: `session_id = str(uuid.uuid4())`
+
+2. Reassignment
+   No confirmed reassignment in the reviewed block.
+```
+
+### 範例：flow trace
+
+```text
+Flow trace for human review:
+
+Target: prompt
+Confirmed file: crush_py/agent/runtime.py
+Coverage: local (reviewed `AgentRuntime.ask` block only)
+Reviewed symbol: AgentRuntime.ask
+Reviewed lines: 66-109
+
+1. Entry point at line 66 inside `AgentRuntime.ask`
+   Evidence: `def ask(self, prompt: str, stream: bool = False) -> str:`
+
+2. Confirmed local transformation at line 76 inside `AgentRuntime.ask`
+   Evidence: `state.entry_point = prompt.strip()`
+
+3. Confirmed storage or persistence at line 78 inside `AgentRuntime.ask`
+   Evidence: `self.session_store.append_message(session.id, "user", prompt)`
+
+4. Confirmed downstream handoff at line 80 inside `AgentRuntime.ask`
+   Evidence: `system_prompt = self._system_prompt_for_prompt(prompt)`
+```
 
 ## 💬 REPL 指令
 
@@ -101,6 +176,10 @@ python -m crush_py --summarize-brief README.md
 /grep "SessionStore" crush_py "*.py"
 ```
 
+### 🧭 `/get_outline PATH`
+
+`get_outline` 是 internal read tool，通常由 runtime 自動使用，不一定需要手動叫。
+
 ### 📄 `/cat PATH [OFFSET] [LIMIT]`
 
 ```bash
@@ -108,6 +187,8 @@ python -m crush_py --summarize-brief README.md
 ```
 
 ## ⚙️ 範例設定
+
+- backend timeout 建議值：`600s / 10min`
 
 ```json
 {
@@ -120,7 +201,7 @@ python -m crush_py --summarize-brief README.md
       "model": "google/gemma-3-4b",
       "base_url": "http://192.168.40.1:1234/v1",
       "api_key": "not-needed",
-      "timeout": 60,
+      "timeout": 600,
       "max_tokens": 2048
     }
   }
@@ -131,10 +212,23 @@ python -m crush_py --summarize-brief README.md
 
 ```bash
 python -m unittest discover -s tests
+python -m unittest tests.test_tools -q
+python -m unittest tests.test_runtime -q
+```
+
+### 建議 smoke tests
+
+```bash
+python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
+python -m crush_py --trace "the variable default_backend in crush_py/config.py"
+python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
 ```
 
 ## 📎 補充文件
 
-- [`summary.txt`](summary.txt)
-- [`plan.md`](plan.md)
-- [`NEXT.md`](NEXT.md)
+- [`session_2026-04-04_learnings.md`](session_2026-04-04_learnings.md)
+- [`task8.md`](task8.md)
+- [`task9.md`](task9.md)
+- [`archieve/summary.txt`](archieve/summary.txt)
+- [`archieve/plan.md`](archieve/plan.md)
+- [`archieve/NEXT.md`](archieve/NEXT.md)
