@@ -14,6 +14,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session", help="Resume an existing session ID")
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Send one prompt and exit")
+    prompt_group.add_argument("--trace", help="Send one trace request and exit")
     prompt_group.add_argument("--summarize", help="Summarize one file and exit")
     prompt_group.add_argument("--summarize-brief", help="Summarize one file briefly and exit")
     parser.add_argument("--stream", action="store_true", help="Stream backend output")
@@ -27,9 +28,19 @@ def build_summary_prompt(path: str, brief: bool = False) -> str:
     return "Summarize {0}".format(normalized)
 
 
+def build_trace_prompt(request: str) -> str:
+    normalized = request.strip()
+    lowered = normalized.lower()
+    if lowered.startswith(("trace ", "where ")):
+        return normalized
+    return "Trace {0}".format(normalized)
+
+
 def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
     if args.prompt:
         return args.prompt
+    if args.trace:
+        return build_trace_prompt(args.trace)
     if args.summarize_brief:
         return build_summary_prompt(args.summarize_brief, brief=True)
     if args.summarize:
