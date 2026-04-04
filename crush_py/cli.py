@@ -1,4 +1,6 @@
 import argparse
+import os
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +10,16 @@ from .repl import run_repl
 from .store.session_store import SessionStore
 
 
+def configure_utf8_stdio() -> None:
+    if os.name != "nt":
+        return
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read-focused repository helper for small local models.")
     parser.add_argument("--config", help="Path to config.json")
@@ -15,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Send one prompt and exit")
     prompt_group.add_argument("--trace", help="Send one trace request and exit")
+    prompt_group.add_argument("--guide", help="Ask beginner-friendly questions about workspace docs and exit")
     prompt_group.add_argument("--summarize", help="Summarize one file and exit")
     prompt_group.add_argument("--summarize-brief", help="Summarize one file briefly and exit")
     parser.add_argument("--stream", action="store_true", help="Stream backend output")
@@ -36,11 +49,27 @@ def build_trace_prompt(request: str) -> str:
     return "Trace {0}".format(normalized)
 
 
+def build_guide_prompt(request: str) -> str:
+    normalized = request.strip()
+    return (
+        "Guide mode:\n"
+        "User request: {0}\n"
+        "Guide expectations:\n"
+        "- answer from workspace docs when possible\n"
+        "- explain for a beginner in plain language\n"
+        "- prefer an action-oriented structure\n"
+        "- include source file hints and section or line clues when available\n"
+        "- be explicit about uncertainty when the docs are incomplete"
+    ).format(normalized)
+
+
 def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
     if args.prompt:
         return args.prompt
     if args.trace:
         return build_trace_prompt(args.trace)
+    if args.guide:
+        return build_guide_prompt(args.guide)
     if args.summarize_brief:
         return build_summary_prompt(args.summarize_brief, brief=True)
     if args.summarize:
@@ -49,6 +78,7 @@ def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
 
 
 def main(argv=None) -> int:
+    configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
 
