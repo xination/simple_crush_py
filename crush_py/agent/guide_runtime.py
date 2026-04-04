@@ -7,11 +7,11 @@ from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, GUIDE_APPENDIX, REA
 
 
 class GuideRuntimeMixin:
-    def _run_direct_file_guide_reader(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str) -> str:
+    def _run_direct_file_guide_reader(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
         mode = self._guide_output_mode(prompt)
         previous_summary = self._latest_guide_reader_summary(session_id, rel_path)
         if previous_summary and self._should_reuse_guide_summary(prompt, previous_summary):
-            return self._answer_from_reused_guide_summary(session_id, backend, prompt, rel_path, mode, previous_summary)
+            return self._answer_from_reused_guide_summary(session_id, backend, prompt, rel_path, mode, previous_summary, stream=stream)
 
         payloads, coverage = self._collect_guide_file_reads(session_id, rel_path)
         compact_payloads = self._compact_reader_cat_payloads(payloads)
@@ -39,13 +39,12 @@ class GuideRuntimeMixin:
         ]
 
         try:
-            turn = self._generate_turn_with_retry(
+            model_text = self._generate_text_with_optional_streaming(
                 backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + GUIDE_APPENDIX + READER_APPENDIX,
                 conversation,
-                tools=None,
+                stream=stream,
             )
-            model_text = sanitize_text(turn.text).strip()
         except BackendError:
             model_text = ""
 
@@ -77,6 +76,7 @@ class GuideRuntimeMixin:
         rel_path: str,
         mode: str,
         previous_summary: str,
+        stream: bool = False,
     ) -> str:
         conversation = [
             {
@@ -96,13 +96,12 @@ class GuideRuntimeMixin:
             }
         ]
         try:
-            turn = self._generate_turn_with_retry(
+            model_text = self._generate_text_with_optional_streaming(
                 backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + GUIDE_APPENDIX + READER_APPENDIX,
                 conversation,
-                tools=None,
+                stream=stream,
             )
-            model_text = sanitize_text(turn.text).strip()
         except BackendError:
             model_text = ""
 

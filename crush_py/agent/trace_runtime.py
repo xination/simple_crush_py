@@ -38,6 +38,7 @@ class TraceRuntimeMixin:
         backend: BaseBackend,
         prompt: str,
         rel_path: str,
+        stream: bool = False,
     ) -> str:
         variable_name = self._prompt_direct_trace_variable(prompt)
         if not variable_name:
@@ -69,13 +70,12 @@ class TraceRuntimeMixin:
             {"role": "user", "content": payloads},
         ]
         try:
-            turn = self._generate_turn_with_retry(
+            model_text = self._generate_text_with_optional_streaming(
                 backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
                 conversation,
-                tools=None,
+                stream=stream,
             )
-            model_text = sanitize_text(turn.text).strip()
         except BackendError as exc:
             model_text = ""
             coverage = "partial"
@@ -114,6 +114,7 @@ class TraceRuntimeMixin:
         backend: BaseBackend,
         prompt: str,
         rel_path: str,
+        stream: bool = False,
     ) -> str:
         variable_name = self._prompt_direct_trace_variable(prompt)
         if not variable_name:
@@ -145,13 +146,12 @@ class TraceRuntimeMixin:
             {"role": "user", "content": payloads},
         ]
         try:
-            turn = self._generate_turn_with_retry(
+            model_text = self._generate_text_with_optional_streaming(
                 backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
                 conversation,
-                tools=None,
+                stream=stream,
             )
-            model_text = sanitize_text(turn.text).strip()
         except BackendError as exc:
             model_text = ""
             coverage = "partial"

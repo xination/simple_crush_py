@@ -44,7 +44,7 @@ COMMANDS = [
 ]
 
 
-def try_handle_command(runtime, raw: str):
+def try_handle_command(runtime, raw: str, stream: bool = False):
     if raw == "/quit":
         return True, 0
     if raw == "/help":
@@ -94,7 +94,7 @@ def try_handle_command(runtime, raw: str):
         if not request:
             print("Usage: /summarize PATH")
             return True, None
-        print(runtime.ask(build_summary_prompt(request), stream=False))
+        runtime.ask(build_summary_prompt(request), stream=stream)
         return True, None
     if raw.startswith("/guide "):
         from .cli import build_guide_prompt
@@ -103,7 +103,7 @@ def try_handle_command(runtime, raw: str):
         if not request:
             print("Usage: /guide QUESTION")
             return True, None
-        print(runtime.ask(build_guide_prompt(request), stream=False))
+        runtime.ask(build_guide_prompt(request), stream=stream)
         return True, None
     if raw.startswith("/trace "):
         from .cli import build_trace_prompt
@@ -112,7 +112,7 @@ def try_handle_command(runtime, raw: str):
         if not request:
             print("Usage: /trace REQUEST")
             return True, None
-        print(runtime.ask(build_trace_prompt(request), stream=False))
+        runtime.ask(build_trace_prompt(request), stream=stream)
         return True, None
     if raw == "/trace":
         print("Usage: /trace REQUEST")

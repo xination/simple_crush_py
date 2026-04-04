@@ -100,4 +100,4 @@ def main(argv=None) -> int:
             print(text)
         return 0
 
-    return run_repl(runtime, stream=args.stream)
+    return run_repl(runtime, stream=True if args.stream is False else args.stream)

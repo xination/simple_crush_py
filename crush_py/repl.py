@@ -30,20 +30,17 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
 
         if not raw:
             continue
-        handled, exit_code = try_handle_command(runtime, raw)
+        handled, exit_code = try_handle_command(runtime, raw, stream=stream)
         if handled:
             if exit_code is not None:
                 return exit_code
             continue
 
         try:
-            text = runtime.ask(raw, stream=stream)
+            runtime.ask(raw, stream=stream)
         except BackendError as exc:
             print("Backend error: {0}".format(exc))
             continue
-
-        if not stream:
-            print(text)
 _format_trace = format_trace
 _format_trace_message = format_trace_message
 _format_history = format_history

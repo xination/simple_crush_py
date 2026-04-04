@@ -278,5 +278,19 @@ class CliTests(unittest.TestCase):
             print_mock.assert_called_once_with("ok")
 
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_main_runs_repl_with_streaming_by_default(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / "config.json"
+            config_path.write_text(
+                '{"workspace_root": ".", "sessions_dir": ".crush_py/sessions", "default_backend": "lm_studio", "backends": {"lm_studio": {"type": "openai_compat", "model": "demo", "base_url": "http://example.test/v1", "api_key": "not-needed"}}}',
+                encoding="utf-8",
+            )
+            fake_runtime = FakeRuntime()
+
+            with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
+                with patch("crush_py.cli.run_repl", return_value=0) as run_repl_mock:
+                    exit_code = main(["--config", str(config_path)])
+
+            self.assertEqual(exit_code, 0)
+            run_repl_mock.assert_called_once_with(fake_runtime, stream=True)

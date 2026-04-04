@@ -22,7 +22,7 @@ DIRECT_SUMMARY_CAT_CHAR_BUDGET = 1400
 
 
 class SummaryRuntimeMixin:
-    def _run_direct_file_summary_reader(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str) -> str:
+    def _run_direct_file_summary_reader(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
         cat_payloads, coverage = self._collect_summary_file_reads(session_id, rel_path)
         cat_payloads = self._compact_reader_cat_payloads(cat_payloads)
         coverage_line = "Coverage: {0}".format(coverage)
@@ -40,8 +40,12 @@ class SummaryRuntimeMixin:
             },
             {"role": "user", "content": cat_payloads},
         ]
-        turn = backend.generate_turn(BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX, conversation, tools=None)
-        final_text = turn.text.strip()
+        final_text = self._generate_text_with_optional_streaming(
+            backend,
+            BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
+            conversation,
+            stream=stream,
+        )
         if coverage != "complete" and "Preliminary summary" not in final_text:
             final_text = "Preliminary summary (partial file coverage).\n" + final_text
 

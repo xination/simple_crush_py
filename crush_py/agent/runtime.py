@@ -84,7 +84,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         system_prompt = self._system_prompt_for_prompt(prompt)
 
         if backend.supports_tool_calls():
-            text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt)
+            text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt, stream=stream)
             text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
         elif stream:
             chunks = []
@@ -178,6 +178,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         messages: List[Dict[str, Any]],
         prompt: str,
         system_prompt: str,
+        stream: bool = False,
     ) -> str:
         conversation = list(messages)
         final_text = ""
@@ -190,7 +191,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
 
         if forced_cat_path is not None:
             self._record_reader_delegate(session_id, forced_cat_path)
-            reader_summary = self._run_reader_agent(session_id, backend, prompt, forced_cat_path)
+            reader_summary = self._run_reader_agent(session_id, backend, prompt, forced_cat_path, stream=stream)
             reader_completed_paths.add(forced_cat_path)
             if direct_file_summary:
                 final_text = self._finalize_direct_file_summary_output(session_id, prompt, reader_summary.strip())

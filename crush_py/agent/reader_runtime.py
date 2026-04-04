@@ -12,15 +12,15 @@ MAX_READER_TOOL_CALLS = 3
 
 
 class ReaderRuntimeMixin:
-    def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str) -> str:
+    def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
         if self._is_direct_file_guide_prompt(prompt):
-            return self._run_direct_file_guide_reader(session_id, backend, prompt, rel_path)
+            return self._run_direct_file_guide_reader(session_id, backend, prompt, rel_path, stream=stream)
         if self._is_direct_file_flow_trace_prompt(prompt):
-            return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path)
+            return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
         if self._is_direct_file_variable_trace_prompt(prompt):
-            return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path)
+            return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
         if self._is_direct_file_summary_prompt(prompt):
-            return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path)
+            return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path, stream=stream)
         strategy = (
             "This is a direct-file summary request. Use `cat` first unless the user explicitly asks about structure, classes, methods, functions, symbols, or architecture."
             if self._is_direct_file_summary_prompt(prompt)
@@ -209,6 +209,24 @@ class ReaderRuntimeMixin:
             and message.metadata.get("agent") == "reader"
             and (message.metadata.get("tool_name") == "reader" or message.metadata.get("tool") == "reader")
         )
+
+    def _generate_text_with_optional_streaming(
+        self,
+        backend: BaseBackend,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        stream: bool = False,
+    ) -> str:
+        if stream:
+            chunks = []
+            for chunk in backend.stream_generate(system_prompt, messages):
+                chunks.append(chunk)
+                print(chunk, end="", flush=True)
+            print("")
+            return sanitize_text("".join(chunks)).strip()
+
+        turn = self._generate_turn_with_retry(backend, system_prompt, messages)
+        return sanitize_text(turn.text).strip()
 
     def _reader_summary_history_content(self, message: Any) -> str:
         rel_path = str(message.metadata.get("tool_arguments", {}).get("path", "")).strip()
