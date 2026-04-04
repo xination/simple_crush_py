@@ -16,8 +16,10 @@ HELP_TEXT = """Commands:
 /grep PATTERN [PATH] [INCLUDE]
 /outline PATH         compact symbol outline for one code file
 /cat PATH [OFFSET] [LIMIT]
+/summarize PATH       send a direct-file summary request
+/guide QUESTION       send a beginner-friendly docs request
+/trace REQUEST        send a trace request (same meaning as CLI --trace)
 /history [LIMIT]      show recent conversation messages
-/trace [LIMIT]        show recent tool trace entries
 /quit                 exit
 """
 
@@ -34,6 +36,8 @@ COMMANDS = [
     "/grep",
     "/outline",
     "/cat",
+    "/summarize",
+    "/guide",
     "/history",
     "/trace",
     "/quit",
@@ -73,15 +77,45 @@ def try_handle_command(runtime, raw: str):
             return True, None
         print(format_history(runtime, limit=limit))
         return True, None
-    if raw == "/trace" or raw.startswith("/trace "):
+    if raw == "/tool-trace" or raw.startswith("/tool-trace "):
         args = safe_split(raw)
         if len(args) > 2:
-            print("Usage: /trace [LIMIT]")
+            print("Usage: /tool-trace [LIMIT]")
             return True, None
-        limit = parse_optional_limit(args[1] if len(args) == 2 else None, "Usage: /trace [LIMIT]")
+        limit = parse_optional_limit(args[1] if len(args) == 2 else None, "Usage: /tool-trace [LIMIT]")
         if limit is None:
             return True, None
         print(format_trace(runtime, limit=limit))
+        return True, None
+    if raw.startswith("/summarize "):
+        from .cli import build_summary_prompt
+
+        request = raw.split(" ", 1)[1].strip()
+        if not request:
+            print("Usage: /summarize PATH")
+            return True, None
+        print(runtime.ask(build_summary_prompt(request), stream=False))
+        return True, None
+    if raw.startswith("/guide "):
+        from .cli import build_guide_prompt
+
+        request = raw.split(" ", 1)[1].strip()
+        if not request:
+            print("Usage: /guide QUESTION")
+            return True, None
+        print(runtime.ask(build_guide_prompt(request), stream=False))
+        return True, None
+    if raw.startswith("/trace "):
+        from .cli import build_trace_prompt
+
+        request = raw.split(" ", 1)[1].strip()
+        if not request:
+            print("Usage: /trace REQUEST")
+            return True, None
+        print(runtime.ask(build_trace_prompt(request), stream=False))
+        return True, None
+    if raw == "/trace":
+        print("Usage: /trace REQUEST")
         return True, None
     if raw.startswith("/use "):
         session_id = raw.split(" ", 1)[1].strip()

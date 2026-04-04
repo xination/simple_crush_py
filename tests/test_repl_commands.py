@@ -24,10 +24,12 @@ class FakeSessionStore:
 class FakeRuntime:
     def __init__(self):
         self.active_backend_name = "demo"
+        self.active_session = None
         self.session_store = FakeSessionStore([FakeSession("s-1", "demo", "First session")])
         self.tool_calls = []
         self.used_sessions = []
         self.new_session_calls = 0
+        self.prompts = []
 
     def new_session(self):
         self.new_session_calls += 1
@@ -48,6 +50,10 @@ class FakeRuntime:
     def run_tool(self, name, payload):
         self.tool_calls.append((name, payload))
         return "tool-result:{0}:{1}".format(name, payload)
+
+    def ask(self, prompt, stream=False):
+        self.prompts.append((prompt, stream))
+        return "assistant-result:{0}".format(prompt)
 
 
 class ReplCommandsTests(unittest.TestCase):
@@ -98,6 +104,55 @@ class ReplCommandsTests(unittest.TestCase):
 
         self.assertFalse(handled)
         self.assertIsNone(exit_code)
+
+    def test_trace_command_sends_trace_prompt(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/trace how prompt flows inside crush_py/agent/runtime.py")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(
+            runtime.prompts,
+            [("Trace how prompt flows inside crush_py/agent/runtime.py", False)],
+        )
+        self.assertIn("assistant-result:Trace how prompt flows inside crush_py/agent/runtime.py", stdout.getvalue())
+
+    def test_guide_command_sends_guide_prompt(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/guide summarize README.md for a beginner")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(len(runtime.prompts), 1)
+        self.assertIn("Guide mode:", runtime.prompts[0][0])
+        self.assertIn("summarize README.md for a beginner", runtime.prompts[0][0])
+        self.assertIn("assistant-result:Guide mode:", stdout.getvalue())
+
+    def test_summarize_command_sends_summary_prompt(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/summarize README.md")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(runtime.prompts, [("Summarize README.md", False)])
+        self.assertIn("assistant-result:Summarize README.md", stdout.getvalue())
+
+    def test_tool_trace_command_shows_trace_log(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/tool-trace 5")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(runtime.prompts, [])
+        self.assertIn("No active session.", stdout.getvalue())
 
 
 if __name__ == "__main__":

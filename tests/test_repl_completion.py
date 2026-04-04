@@ -48,6 +48,7 @@ class ReplCompletionTests(unittest.TestCase):
         runtime = FakeRuntime(Path("."))
         matches = complete_input(runtime, "/tr", "/tr")
         self.assertIn("/trace", matches)
+        self.assertNotIn("/tool-trace", matches)
 
     def test_complete_input_routes_use_to_sessions(self):
         runtime = FakeRuntime(Path("."), sessions=[FakeSession("sess-1"), FakeSession("other")])
