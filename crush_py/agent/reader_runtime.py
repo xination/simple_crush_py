@@ -1,0 +1,244 @@
+from typing import Any, Dict, List, Optional
+
+from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
+from ..tools.base import ToolError
+from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
+
+
+READER_TOOL_NAMES = ("get_outline", "cat")
+MAX_READER_ROUNDS = 4
+MAX_READER_TOOL_CALLS = 3
+
+
+class ReaderRuntimeMixin:
+    def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str) -> str:
+        if self._is_direct_file_flow_trace_prompt(prompt):
+            return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path)
+        if self._is_direct_file_variable_trace_prompt(prompt):
+            return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path)
+        if self._is_direct_file_summary_prompt(prompt):
+            return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path)
+        strategy = (
+            "This is a direct-file summary request. Use `cat` first unless the user explicitly asks about structure, classes, methods, functions, symbols, or architecture."
+            if self._is_direct_file_summary_prompt(prompt)
+            else "Use `get_outline` first if it helps, then `cat` if needed."
+        )
+        conversation = [
+            {
+                "role": "user",
+                "content": (
+                    "User request: {0}\n"
+                    "Target file: {1}\n"
+                    "Read only this file for the planner. {2}"
+                ).format(prompt.strip(), rel_path, strategy),
+            }
+        ]
+        final_text = ""
+        tool_calls_used = 0
+        for _ in range(MAX_READER_ROUNDS):
+            remaining_tool_calls = max(0, MAX_READER_TOOL_CALLS - tool_calls_used)
+            turn = backend.generate_turn(
+                BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
+                conversation,
+                tools=self.tools.specs(READER_TOOL_NAMES) if remaining_tool_calls > 0 else None,
+            )
+            final_text = turn.text.strip()
+            if not turn.tool_calls:
+                state = self._state_for_session(session_id)
+                state.file_summaries[rel_path] = _single_line(final_text, 240)
+                if rel_path and rel_path not in state.confirmed_paths:
+                    state.confirmed_paths.append(rel_path)
+                self.session_store.append_message(
+                    session_id,
+                    "assistant",
+                    final_text,
+                    kind="tool_result",
+                    metadata={
+                        "agent": "reader",
+                        "tool_name": "reader",
+                        "tool_arguments": {"path": rel_path},
+                        "tool_use_id": "reader:{0}".format(rel_path),
+                        "summary": final_text,
+                    },
+                )
+                return final_text
+
+            assistant_content = self._assistant_content_for_tool_turn(turn)
+            conversation.append({"role": "assistant", "content": assistant_content})
+            executed_calls = executed_calls_from_turn(turn, limit=remaining_tool_calls)
+            if not executed_calls:
+                continue
+            tool_calls_used += len(executed_calls)
+            self.session_store.append_message(
+                session_id,
+                "assistant",
+                self._squashed_assistant_text(turn),
+                kind="tool_use",
+                metadata={
+                    "agent": "reader",
+                    "tool_names": [tool_call.name for tool_call in executed_calls],
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "name": tool_call.name,
+                            "arguments": dict(tool_call.arguments),
+                        }
+                        for tool_call in executed_calls
+                    ],
+                    "assistant_text": self._squashed_assistant_text(turn),
+                },
+            )
+
+            tool_results = []
+            for tool_call in executed_calls:
+                arguments = dict(tool_call.arguments)
+                try:
+                    result = self.run_tool(tool_call.name, arguments)
+                except ToolError as exc:
+                    result = "Tool error: {0}".format(exc)
+                summary = self._summarize_tool_result(session_id, tool_call.name, arguments, result)
+                backend_tool_result = {
+                    "type": "tool_result",
+                    "tool_use_id": tool_call.id,
+                    "tool_name": tool_call.name,
+                    "content": self._backend_tool_result_content(tool_call.name, result, summary),
+                }
+                tool_results.append(backend_tool_result)
+                self.session_store.append_message(
+                    session_id,
+                    "user",
+                    backend_tool_result["content"],
+                    kind="tool_result",
+                    metadata={
+                        "agent": "reader",
+                        "tool_name": tool_call.name,
+                        "tool_arguments": arguments,
+                        "tool_use_id": tool_call.id,
+                        "summary": summary,
+                    },
+                )
+            conversation.append({"role": "user", "content": tool_results})
+
+        raise BackendError("Reader agent exceeded the maximum number of rounds.")
+
+    def _record_reader_cat_tool(self, session_id: str, arguments: Dict[str, Any]) -> str:
+        return self._record_reader_tool(session_id, "cat", arguments)
+
+    def _record_reader_tool(self, session_id: str, tool_name: str, arguments: Dict[str, Any]) -> str:
+        tool_use_id = _tool_use_id_for_reader_tool(tool_name, arguments)
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            "",
+            kind="tool_use",
+            metadata={
+                "agent": "reader",
+                "tool_names": [tool_name],
+                "tool_calls": [{"id": tool_use_id, "name": tool_name, "arguments": dict(arguments)}],
+                "assistant_text": "",
+            },
+        )
+        result = self.run_tool(tool_name, arguments)
+        summary = self._summarize_tool_result(session_id, tool_name, arguments, result)
+        self.session_store.append_message(
+            session_id,
+            "user",
+            self._backend_tool_result_content(tool_name, result, summary),
+            kind="tool_result",
+            metadata={
+                "agent": "reader",
+                "tool_name": tool_name,
+                "tool_arguments": dict(arguments),
+                "tool_use_id": tool_use_id,
+                "summary": summary,
+            },
+        )
+        return result
+
+    def _append_reader_summary_message(
+        self,
+        messages: List[Dict[str, Any]],
+        rel_path: str,
+        reader_summary: str,
+    ) -> List[Dict[str, Any]]:
+        updated = list(messages)
+        updated.append(
+            {
+                "role": "user",
+                "content": "Reader agent summary for `{0}`:\n{1}".format(rel_path, reader_summary),
+            }
+        )
+        return updated
+
+    def _record_reader_delegate(self, session_id: str, rel_path: str) -> None:
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            "Delegating `{0}` to reader agent.".format(rel_path),
+            kind="tool_use",
+            metadata={
+                "agent": "planner",
+                "tool_names": ["reader"],
+                "tool_calls": [
+                    {
+                        "id": "reader:{0}".format(rel_path),
+                        "name": "reader",
+                        "arguments": {"path": rel_path},
+                    }
+                ],
+                "assistant_text": "Delegating `{0}` to reader agent.".format(rel_path),
+            },
+        )
+
+    def _skip_message_for_planner_history(self, message: Any) -> bool:
+        if message.metadata.get("agent") != "reader":
+            return False
+        return not self._is_reader_summary_message(message)
+
+    def _is_reader_summary_message(self, message: Any) -> bool:
+        return (
+            message.kind == "tool_result"
+            and message.metadata.get("agent") == "reader"
+            and (message.metadata.get("tool_name") == "reader" or message.metadata.get("tool") == "reader")
+        )
+
+    def _reader_summary_history_content(self, message: Any) -> str:
+        rel_path = str(message.metadata.get("tool_arguments", {}).get("path", "")).strip()
+        if not rel_path:
+            rel_path = str(message.metadata.get("args", {}).get("path", "")).strip()
+        if rel_path:
+            return "Reader summary for `{0}`:\n{1}".format(rel_path, message.content or message.metadata.get("summary", ""))
+        return "Reader summary:\n{0}".format(message.content or message.metadata.get("summary", ""))
+
+
+def _single_line(text: str, max_length: int = 160) -> str:
+    normalized = " ".join(str(text).strip().split())
+    if len(normalized) <= max_length:
+        return normalized
+    return normalized[:max_length] + " ..."
+
+
+def _tool_use_id_for_cat(arguments: Dict[str, Any]) -> str:
+    path = str(arguments.get("path", "")).strip() or "<missing>"
+    if arguments.get("full"):
+        return "reader-cat-full:{0}".format(path)
+    offset = int(arguments.get("offset", 0) or 0)
+    limit = int(arguments.get("limit", 0) or 0)
+    return "reader-cat:{0}:{1}:{2}".format(path, offset, limit)
+
+
+def _tool_use_id_for_reader_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
+    if tool_name == "cat":
+        return _tool_use_id_for_cat(arguments)
+    path = str(arguments.get("path", "")).strip() or "<missing>"
+    if tool_name == "grep":
+        pattern = str(arguments.get("pattern", "")).strip() or "<missing>"
+        include = str(arguments.get("include", "")).strip() or "*"
+        return "reader-grep:{0}:{1}:{2}".format(path, include, pattern)
+    return "reader-{0}:{1}".format(tool_name, path)
+
+
+def executed_calls_from_turn(turn: AssistantTurn, limit: int) -> List[ToolCall]:
+    if limit <= 0:
+        return []
+    return turn.tool_calls[:limit]
