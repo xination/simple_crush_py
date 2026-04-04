@@ -80,6 +80,7 @@ python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
   - `Reviewed symbol`
   - `Reviewed lines`
   - evidence-backed flow sections
+- `summary`、`variable trace`、`flow trace` 都共用 backend timeout，預設是 `600s`
 
 ## 🧾 Trace 報告風格
 
@@ -198,7 +199,7 @@ Reviewed lines: 66-109
   "backends": {
     "lm_studio": {
       "type": "openai_compat",
-      "model": "google/gemma-3-4b",
+      "model": "google/gemma-4-26b-a4b",
       "base_url": "http://192.168.40.1:1234/v1",
       "api_key": "not-needed",
       "timeout": 600,
