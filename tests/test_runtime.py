@@ -236,11 +236,13 @@ class FakeVariableTraceDirectBackend(BaseBackend):
                     "1. Defined or first assigned at line 10 inside `create_session`\n"
                     "   Evidence: `session_id = payload.get(\"session_id\") or str(uuid4())`\n\n"
                     "2. Reassigned at `No confirmed reassignment in reviewed windows`\n"
-                    "   Evidence: `session_id` keeps the same local binding in the reviewed slices\n\n"
-                    "3. Passed as an argument at line 18 into `SessionMeta(...)`\n"
+                    "   Evidence: `title = title.strip()`\n\n"
+                    "3. Passed as an argument at line 18 inside `create_session`\n"
                     "   Evidence: `SessionMeta(session_id=session_id, created_at=created_at)`\n\n"
-                    "4. Used in condition, return, or storage at line 31 when building `_session_dir(session_id)`\n"
+                    "4. Used in condition, return, or storage at line 31 inside `create_session`\n"
                     "   Evidence: `return self._session_dir(session_id)`\n\n"
+                    "Unresolved uncertainty:\n"
+                    "- None\n\n"
                     "Unresolved uncertainty:\n"
                     "- The trace is limited to the reviewed grep windows in this file."
                 )
@@ -276,11 +278,11 @@ class FakeFlowTraceDirectBackend(BaseBackend):
                     "Coverage: local\n\n"
                     "1. Entry point\n"
                     "   Evidence: `def ask(self, prompt: str, stream: bool = False) -> str:`\n\n"
-                    "2. Immediate transformations or normalization\n"
+                    "2. Confirmed local transformation\n"
                     "   Evidence: `prompt.strip()` inside `state.entry_point = prompt.strip()`\n\n"
-                    "3. Storage or state updates\n"
+                    "3. Confirmed storage or persistence\n"
                     "   Evidence: `state.entry_point = prompt.strip()`\n\n"
-                    "4. Downstream calls or handoff sites\n"
+                    "4. Confirmed downstream handoff\n"
                     "   Evidence: `No confirmed downstream handoff in reviewed blocks`\n\n"
                     "5. Confirmed local flow\n"
                     "   Evidence: `ask(prompt)` -> `prompt.strip()` -> `state.entry_point`\n\n"
@@ -1120,6 +1122,7 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertEqual(backend.planner_turn_count, 0)
             self.assertIn("Variable trace for human review:", result)
+            self.assertIn("Coverage: local (reviewed `create_session` block only)", result)
             self.assertIsNotNone(backend.reader_messages)
             prompt_text = backend.reader_messages[0]["content"]
             self.assertIn("Variable: session_id", prompt_text)
@@ -1134,6 +1137,14 @@ class AgentRuntimeTests(unittest.TestCase):
             cat_payloads = [payload for payload in payloads if payload["tool_name"] == "cat"]
             self.assertTrue(cat_payloads)
             self.assertTrue(all(not payload["tool_use_id"].startswith("reader-cat-full:") for payload in cat_payloads))
+            self.assertIn("Passed as an argument at line 12 inside `create_session`", result)
+            self.assertIn("Evidence: `return _session_dir(session_id)`", result)
+            self.assertIn("Stored into field at line 10 inside `create_session`", result)
+            self.assertIn("No confirmed reassignment in the reviewed block.", result)
+            self.assertIn("Confirmed local flow", result)
+            self.assertEqual(result.count("Unresolved uncertainty:"), 1)
+            self.assertNotIn("No direct role site retained from reviewed windows", result)
+            self.assertNotIn("- None", result)
 
     def test_direct_file_flow_trace_reads_containing_function_blocks(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1177,6 +1188,76 @@ class AgentRuntimeTests(unittest.TestCase):
             reader_result = next(message for message in messages if message.kind == "tool_result" and message.metadata.get("tool") == "reader")
             self.assertEqual(reader_result.metadata["args"]["mode"], "flow_trace")
             self.assertEqual(reader_result.metadata["args"]["coverage"], "local")
+
+    def test_flow_trace_uses_qualname_and_separates_persistence_from_handoff(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "agent"
+            target.mkdir(parents=True)
+            (target / "runtime.py").write_text(
+                "\n".join(
+                    [
+                        "class AgentRuntime:",
+                        "    def ask(self, prompt: str, stream: bool = False) -> str:",
+                        "        state = self._state()",
+                        "        normalized = prompt.strip()",
+                        "        state.entry_point = normalized",
+                        "        self.session_store.append_message(prompt)",
+                        "        return self.backend.send(prompt)",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            payloads = [
+                {
+                    "tool_name": "get_outline",
+                    "tool_use_id": "reader-outline:crush_py/agent/runtime.py",
+                    "content": "unused",
+                },
+                {
+                    "tool_name": "grep",
+                    "tool_use_id": "reader-grep:crush_py/agent/runtime.py:prompt",
+                    "content": (
+                        "crush_py/agent/runtime.py:\n"
+                        "  Line 2, Char 19: def ask(self, prompt: str, stream: bool = False) -> str:\n"
+                        "  Line 4, Char 22: normalized = prompt.strip()\n"
+                        "  Line 6, Char 43: self.session_store.append_message(prompt)\n"
+                        "  Line 7, Char 34: return self.backend.send(prompt)\n"
+                    ),
+                },
+                {
+                    "tool_name": "cat",
+                    "tool_use_id": "reader-cat:crush_py/agent/runtime.py:2:7",
+                    "content": (
+                        '<file path="crush_py/agent/runtime.py" offset="1" limit="6">\n'
+                        "     2|    def ask(self, prompt: str, stream: bool = False) -> str:\n"
+                        "     3|        state = self._state()\n"
+                        "     4|        normalized = prompt.strip()\n"
+                        "     5|        state.entry_point = normalized\n"
+                        "     6|        self.session_store.append_message(prompt)\n"
+                        "     7|        return self.backend.send(prompt)\n"
+                        "</file>"
+                    ),
+                },
+            ]
+
+            result = runtime._append_flow_trace_postprocessing(
+                "Flow trace for human review:\n\nTarget: prompt\nConfirmed file: crush_py/agent/runtime.py",
+                "local",
+                "prompt",
+                payloads,
+            )
+
+            self.assertIn("Coverage: local (reviewed `AgentRuntime.ask` block only)", result)
+            self.assertIn("Reviewed symbol: AgentRuntime.ask", result)
+            self.assertIn("2. Confirmed local transformation at line 4 inside `AgentRuntime.ask`", result)
+            self.assertIn("3. Confirmed storage or persistence at line 6 inside `AgentRuntime.ask`", result)
+            self.assertIn("4. Confirmed downstream handoff at line 7 inside `AgentRuntime.ask`", result)
+            self.assertIn("A storage or persistence call using `prompt` is confirmed in the reviewed block.", result)
+            self.assertNotIn("Storage or state updates", result)
 
     def test_trace_prompt_does_not_use_direct_summary_fast_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:

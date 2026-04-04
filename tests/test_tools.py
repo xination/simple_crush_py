@@ -8,6 +8,7 @@ from crush_py.tools.find import FindTool
 from crush_py.tools.get_outline import GetOutlineTool
 from crush_py.tools.grep import GrepTool
 from crush_py.tools.ls import LsTool
+from crush_py.tools.outline_providers import PythonAstOutlineProvider, RegexOutlineProvider, default_outline_provider_chain
 from crush_py.tools.registry import ToolRegistry
 from crush_py.tools.tree import TreeTool
 
@@ -124,6 +125,63 @@ class ToolTests(unittest.TestCase):
 
         self.assertIn('<outline path="src/demo.py">', result)
         self.assertIn("def alpha()", result)
+
+    def test_get_outline_ast_provider_keeps_nested_python_structure(self):
+        (self.workspace / "src" / "nested_demo.py").write_text(
+            "\n".join(
+                [
+                    "class Outer:",
+                    "    def method(self):",
+                    "        def helper():",
+                    "            return 1",
+                    "        return helper()",
+                    "",
+                    "async def worker():",
+                    "    return 2",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = GetOutlineTool(self.workspace).run({"path": "src/nested_demo.py"})
+
+        self.assertIn("class Outer", result)
+        self.assertIn("def method(...)", result)
+        self.assertIn("def helper(...)", result)
+        self.assertIn("async def worker(...)", result)
+
+    def test_python_ast_provider_exposes_qualnames_and_parent_spans(self):
+        source = "\n".join(
+            [
+                "class Outer:",
+                "    def method(self):",
+                "        def helper():",
+                "            return 1",
+                "        return helper()",
+            ]
+        )
+
+        symbols = PythonAstOutlineProvider().extract(source, self.workspace / "demo.py")
+
+        self.assertEqual([symbol.qualname for symbol in symbols[:3]], ["Outer", "Outer.method", "Outer.method.helper"])
+        self.assertEqual([symbol.parent for symbol in symbols[:3]], [None, "Outer", "method"])
+        self.assertTrue(all(symbol.end_line >= symbol.start_line for symbol in symbols))
+
+    def test_regex_provider_remains_available_as_fallback(self):
+        source = "def alpha(x,\n"
+
+        symbols = RegexOutlineProvider().extract(source, self.workspace / "broken.py")
+
+        self.assertEqual([symbol.display for symbol in symbols], ["def alpha(x,"])
+
+    def test_default_outline_provider_chain_prefers_ast_and_falls_back_on_syntax_error(self):
+        chain = default_outline_provider_chain()
+
+        ast_symbols = chain.extract("class Demo:\n    def run(self):\n        return 1\n", self.workspace / "demo.py")
+        fallback_symbols = chain.extract("def alpha(x,\n", self.workspace / "broken.py")
+
+        self.assertEqual(ast_symbols[0].qualname, "Demo")
+        self.assertEqual(fallback_symbols[0].display, "def alpha(x,")
 
     def test_registry_exposes_only_read_tools(self):
         backend = BackendConfig(
