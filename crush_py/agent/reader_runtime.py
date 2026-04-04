@@ -45,6 +45,7 @@ class ReaderRuntimeMixin:
                 BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
                 conversation,
                 tools=self.tools.specs(READER_TOOL_NAMES) if remaining_tool_calls > 0 else None,
+                stream=stream,
             )
             final_text = sanitize_text(turn.text).strip()
             if not turn.tool_calls:
@@ -59,6 +60,7 @@ class ReaderRuntimeMixin:
                     kind="tool_result",
                     metadata={
                         "agent": "reader",
+                        "tool": "reader",
                         "tool_name": "reader",
                         "tool_arguments": {"path": rel_path},
                         "tool_use_id": "reader:{0}".format(rel_path),
@@ -80,6 +82,7 @@ class ReaderRuntimeMixin:
                 kind="tool_use",
                 metadata={
                     "agent": "reader",
+                    "tool": executed_calls[0].name if executed_calls else "",
                     "tool_names": [tool_call.name for tool_call in executed_calls],
                     "tool_calls": [
                         {
@@ -116,6 +119,7 @@ class ReaderRuntimeMixin:
                     kind="tool_result",
                     metadata={
                         "agent": "reader",
+                        "tool": tool_call.name,
                         "tool_name": tool_call.name,
                         "tool_arguments": arguments,
                         "tool_use_id": tool_call.id,
@@ -139,6 +143,7 @@ class ReaderRuntimeMixin:
             kind="tool_use",
             metadata={
                 "agent": "reader",
+                "tool": tool_name,
                 "tool_names": [tool_name],
                 "tool_calls": [{"id": tool_use_id, "name": tool_name, "arguments": dict(arguments)}],
                 "assistant_text": "",
@@ -154,6 +159,7 @@ class ReaderRuntimeMixin:
             kind="tool_result",
             metadata={
                 "agent": "reader",
+                "tool": tool_name,
                 "tool_name": tool_name,
                 "tool_arguments": dict(arguments),
                 "tool_use_id": tool_use_id,
@@ -186,6 +192,7 @@ class ReaderRuntimeMixin:
             kind="tool_use",
             metadata={
                 "agent": "planner",
+                "tool": "reader",
                 "tool_names": ["reader"],
                 "tool_calls": [
                     {

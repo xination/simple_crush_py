@@ -12,7 +12,7 @@ class Message:
 
     def to_dict(self) -> Dict[str, Any]:
         if self.kind == "tool_use" and self.metadata.get("__flat__"):
-            payload = {"kind": "tool_use"}
+            payload = {"kind": "tool_use", "role": "assistant"}
             tool_name = self.metadata.get("tool")
             if tool_name:
                 payload["tool"] = tool_name
@@ -27,7 +27,7 @@ class Message:
                 payload["text"] = text
             return payload
         if self.kind == "tool_result" and self.metadata.get("__flat__"):
-            payload = {"kind": "tool_result"}
+            payload = {"kind": "tool_result", "role": "user"}
             tool_name = self.metadata.get("tool")
             if tool_name:
                 payload["tool"] = tool_name
@@ -59,7 +59,7 @@ class Message:
     @classmethod
     def from_dict(cls, payload: Dict[str, Any]) -> "Message":
         kind = payload.get("kind", "message")
-        if kind == "tool_use" and "role" not in payload:
+        if kind == "tool_use" and "metadata" not in payload:
             metadata = {
                 "tool": payload.get("tool", ""),
                 "args": dict(payload.get("args", {}) or {}),
@@ -68,8 +68,8 @@ class Message:
                 "__flat__": True,
             }
             metadata = {key: value for key, value in metadata.items() if value not in ("", {}, None)}
-            return cls(kind="tool_use", content="", metadata=metadata)
-        if kind == "tool_result" and "role" not in payload:
+            return cls(role=payload.get("role", "assistant"), kind="tool_use", content="", metadata=metadata)
+        if kind == "tool_result" and "metadata" not in payload:
             metadata = {
                 "tool": payload.get("tool", ""),
                 "summary": payload.get("summary", ""),
@@ -86,7 +86,7 @@ class Message:
                 for key, value in metadata.items()
                 if value not in ("", None, False)
             }
-            return cls(kind="tool_result", content="", metadata=metadata)
+            return cls(role=payload.get("role", "user"), kind="tool_result", content="", metadata=metadata)
         return cls(
             role=payload.get("role", ""),
             content=payload.get("content", ""),

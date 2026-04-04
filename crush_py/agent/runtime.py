@@ -227,7 +227,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
 
         for _ in range(MAX_TOOL_ROUNDS):
             current_tools = self.tools.specs(LOCATOR_TOOL_NAMES)
-            turn = self._generate_turn_with_retry(backend, system_prompt, conversation, tools=current_tools)
+            turn = self._generate_turn_with_retry(backend, system_prompt, conversation, tools=current_tools, stream=stream)
             final_text = sanitize_text(turn.text).strip()
             final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
             if not turn.tool_calls:
@@ -249,6 +249,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                 kind="tool_use",
                 metadata={
                     "agent": "planner",
+                    "tool": executed_calls[0].name if executed_calls else "",
                     "tool_names": [tool_call.name for tool_call in executed_calls],
                     "tool_calls": [
                         {
@@ -290,6 +291,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                     kind="tool_result",
                     metadata={
                         "agent": "planner",
+                        "tool": tool_call.name,
                         "tool_name": tool_call.name,
                         "tool_arguments": arguments,
                         "tool_use_id": tool_call.id,
@@ -431,7 +433,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         return []
 
     def _backend_tool_result_content(self, tool_name: str, result: str, summary: str) -> str:
-        if tool_name in ("cat", "get_outline") and len(result) <= MAX_INLINE_CAT_RESULT_CHARS:
+        if tool_name in ("cat", "get_outline", "tree", "ls") and len(result) <= MAX_INLINE_CAT_RESULT_CHARS:
             return result
         return summary
 
@@ -525,6 +527,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         system_prompt: str,
         messages: List[Dict[str, Any]],
         tools: Optional[List[dict]] = None,
+        stream: bool = False,
     ) -> AssistantTurn:
         errors: List[str] = []
         attempts = [messages]
@@ -534,11 +537,30 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         for retry_index in range(MAX_BACKEND_RETRIES + 1):
             for candidate_messages in attempts:
                 try:
+                    if stream:
+                        chunks = []
+                        for chunk in backend.stream_generate(system_prompt, candidate_messages, tools=tools):
+                            chunks.append(chunk)
+                            print(chunk, end="", flush=True)
+
+                        if chunks:
+                            print("")
+                            text = "".join(chunks)
+                            return AssistantTurn(
+                                text=sanitize_text(text),
+                                tool_calls=[],
+                                raw_content=[{"type": "text", "text": text}],
+                            )
+                        # No chunks? Likely a tool call or empty response. Proceed to generate_turn.
+
                     turn = backend.generate_turn(system_prompt, candidate_messages, tools=tools)
+                    text = sanitize_text(turn.text)
+                    if stream and text:
+                        print(text)
                     return AssistantTurn(
-                        text=sanitize_text(turn.text),
+                        text=text,
                         tool_calls=turn.tool_calls,
-                        raw_content=sanitize_content(turn.raw_content),
+                        raw_content=sanitize_content(turn.raw_content or self._assistant_text_blocks(turn)),
                     )
                 except BackendError as exc:
                     errors.append(str(exc))

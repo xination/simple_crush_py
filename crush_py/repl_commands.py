@@ -127,6 +127,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         print("[session] {0} ({1})".format(session.id, session.backend))
         return True, None
     if raw == "/ls" or raw.startswith("/ls "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) > 3:
             print("Usage: /ls [PATH] [DEPTH]")
@@ -139,6 +141,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "ls", payload)
         return True, None
     if raw == "/tree" or raw.startswith("/tree "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) > 3:
             print("Usage: /tree [PATH] [DEPTH]")
@@ -151,6 +155,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "tree", payload)
         return True, None
     if raw.startswith("/find "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) < 2 or len(args) > 3:
             print("Usage: /find PATTERN [PATH]")
@@ -161,6 +167,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "find", payload)
         return True, None
     if raw.startswith("/grep "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) < 2 or len(args) > 4:
             print("Usage: /grep PATTERN [PATH] [INCLUDE]")
@@ -173,6 +181,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "grep", payload)
         return True, None
     if raw.startswith("/outline "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) < 2 or len(args) > 3:
             print("Usage: /outline PATH [MAX_ITEMS]")
@@ -183,6 +193,8 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "get_outline", payload)
         return True, None
     if raw.startswith("/cat "):
+        if runtime.active_session:
+            runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
         if len(args) < 2 or len(args) > 4:
             print("Usage: /cat PATH [OFFSET] [LIMIT]")
@@ -198,10 +210,54 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
 
 
 def run_tool_and_print(runtime, tool_name: str, payload: dict) -> None:
+    session = runtime.active_session
+    if session:
+        runtime.session_store.append_message(
+            session.id,
+            "assistant",
+            "",
+            kind="tool_use",
+            metadata={
+                "tool": tool_name,
+                "args": payload,
+                "agent": "planner",
+                "__flat__": True,
+            },
+        )
     try:
-        print(runtime.run_tool(tool_name, payload))
+        result = runtime.run_tool(tool_name, payload)
+        print(result)
+        if session:
+            summary = runtime._summarize_tool_result(session.id, tool_name, payload, result)
+            runtime.session_store.append_message(
+                session.id,
+                "user",
+                runtime._backend_tool_result_content(tool_name, result, summary),
+                kind="tool_result",
+                metadata={
+                    "tool": tool_name,
+                    "args": payload,
+                    "summary": summary,
+                    "agent": "planner",
+                    "__flat__": True,
+                },
+            )
     except ToolError as exc:
         print("Tool error: {0}".format(exc))
+        if session:
+            runtime.session_store.append_message(
+                session.id,
+                "user",
+                "Tool error: {0}".format(exc),
+                kind="tool_result",
+                metadata={
+                    "tool": tool_name,
+                    "args": payload,
+                    "error": True,
+                    "agent": "planner",
+                    "__flat__": True,
+                },
+            )
 
 
 def parse_optional_limit(value, usage):

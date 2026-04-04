@@ -128,12 +128,13 @@ class SessionStoreTests(unittest.TestCase):
 
             self.assertEqual(
                 payloads[0],
-                {"kind": "tool_use", "tool": "grep", "args": {"pattern": "needle"}, "agent": "planner"},
+                {"kind": "tool_use", "role": "assistant", "tool": "grep", "args": {"pattern": "needle"}, "agent": "planner"},
             )
             self.assertEqual(
                 payloads[1],
                 {
                     "kind": "tool_result",
+                    "role": "user",
                     "tool": "grep",
                     "summary": "No clear file candidates for `needle`.",
                     "agent": "planner",
