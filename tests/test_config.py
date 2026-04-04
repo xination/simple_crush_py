@@ -18,6 +18,7 @@ class LoadConfigTests(unittest.TestCase):
             self.assertEqual(config.trace_mode, "lean")
             self.assertEqual(sorted(config.backends.keys()), ["lm_studio"])
             self.assertEqual(config.backends["lm_studio"].type, "openai_compat")
+            self.assertEqual(config.backends["lm_studio"].timeout, 600)
 
     def test_merges_custom_config_for_openai_compat_backend(self):
         with tempfile.TemporaryDirectory() as tmpdir:

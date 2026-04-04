@@ -7,6 +7,7 @@ from typing import Dict, Optional
 
 DEFAULT_OPENAI_COMPAT_BASE_URL = "http://192.168.40.1:1234/v1"
 DEFAULT_OPENAI_COMPAT_MODEL = "google/gemma-3-4b"
+DEFAULT_BACKEND_TIMEOUT = 600
 
 
 class ConfigError(Exception):
@@ -46,7 +47,7 @@ def _default_config_dict() -> dict:
                 "model": DEFAULT_OPENAI_COMPAT_MODEL,
                 "base_url": DEFAULT_OPENAI_COMPAT_BASE_URL,
                 "api_key": "not-needed",
-                "timeout": 60,
+                "timeout": DEFAULT_BACKEND_TIMEOUT,
                 "max_tokens": 2048,
             }
         },
@@ -88,7 +89,7 @@ def load_config(config_path: Optional[str] = None, base_dir: Optional[str] = Non
             base_url=backend["base_url"],
             api_key=api_key,
             api_key_env=api_key_env,
-            timeout=int(backend.get("timeout", 60)),
+            timeout=int(backend.get("timeout", DEFAULT_BACKEND_TIMEOUT)),
             max_tokens=int(backend.get("max_tokens", 4096)),
         )
 
