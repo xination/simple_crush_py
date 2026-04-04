@@ -13,6 +13,8 @@ MAX_READER_TOOL_CALLS = 3
 
 class ReaderRuntimeMixin:
     def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str) -> str:
+        if self._is_direct_file_guide_prompt(prompt):
+            return self._run_direct_file_guide_reader(session_id, backend, prompt, rel_path)
         if self._is_direct_file_flow_trace_prompt(prompt):
             return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path)
         if self._is_direct_file_variable_trace_prompt(prompt):

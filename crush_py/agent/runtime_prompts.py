@@ -28,6 +28,15 @@ Direct-file mode:
 - keep the answer short and file-focused
 """
 
+GUIDE_APPENDIX = """
+Guide mode:
+- answer from workspace docs when possible
+- explain for a beginner in plain language
+- prefer action-oriented structure over analysis jargon
+- include source file hints and line or section clues when available
+- say when the evidence is partial or uncertain
+"""
+
 READER_APPENDIX = """
 Reader mode:
 - you read one concrete file for the planner

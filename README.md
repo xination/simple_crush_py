@@ -233,3 +233,62 @@ python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
 - [`archieve/summary.txt`](archieve/summary.txt)
 - [`archieve/plan.md`](archieve/plan.md)
 - [`archieve/NEXT.md`](archieve/NEXT.md)
+
+## Guide mode
+
+```bash
+python -m crush_py --guide "summarize README.md for a beginner"
+python -m crush_py --guide "turn README.md into a checklist"
+python -m crush_py --guide "which parts of README.md should a beginner read first?"
+python -m crush_py --guide "I am stuck at step 3 in README.md"
+```
+
+- `--guide` adds a beginner-friendly docs mode for workspace-local instruction files.
+- It prefers repo-local docs, plain-language explanations, and action-oriented output.
+- When the prompt names one concrete doc, the runtime reads that file first and includes source hints with file and line clues.
+- v1 stays intentionally lightweight: local read tools only, no embeddings, no external web knowledge, and no cross-repo retrieval.
+
+### Multi-turn guide Q&A demo
+
+```text
+Q1: summarize README.md for a beginner
+
+A1:
+- Goal: explain what the project is for.
+- You will accomplish: understand the tool's scope before using it.
+- Prepare first: check the required Python version and backend setup.
+- Main steps: read the overview, setup notes, and CLI examples first.
+- Common beginner confusion: the project is read-only and does not act like a general web assistant.
+- Sources: README.md:1-31
+
+Q2: turn README.md into a checklist
+
+A2:
+1. Read the project overview and scope.
+2. Confirm the required runtime and backend settings.
+3. Try the documented CLI commands in the suggested order.
+Success check: you can run one example command and understand what each read tool is for.
+Sources: README.md:1-31
+
+Q3: I am stuck during setup in README.md
+
+A3:
+- Likely current step: the initial environment or backend configuration stage.
+- Relevant source section: the setup section and example commands.
+- Possible causes: missing Python version, backend not configured, or running from the wrong workspace.
+- What to check first: compare your local setup with the documented config example.
+- What to do next: fix the missing prerequisite, then rerun the first example command.
+- Sources: README.md:19-31, README.md:97-113
+```
+
+### CLI `--session` smoke demo
+
+```bash
+python -m crush_py --guide "summarize README.md for a beginner"
+python -m crush_py --session <session_id> --guide "turn README.md into a checklist"
+python -m crush_py --session <session_id> --guide "I am stuck during setup in README.md"
+```
+
+- The first command creates the session and writes a new session folder under `.crush_py/sessions/`.
+- Use that generated session id in the later commands so the follow-up guide questions stay in the same conversation.
+- This is the simplest smoke test for multi-turn guide behavior on one local doc.

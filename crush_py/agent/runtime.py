@@ -12,12 +12,14 @@ from ..tools.registry import ToolRegistry
 from .runtime_prompts import (
     BASE_READ_HELPER_SYSTEM_PROMPT,
     DIRECT_FILE_APPENDIX,
+    GUIDE_APPENDIX,
     PLANNER_APPENDIX,
     TRACE_APPENDIX,
 )
 from .reader_runtime import ReaderRuntimeMixin
 from .summary_runtime import SummaryRuntimeMixin
 from .trace_runtime import TraceRuntimeMixin
+from .guide_runtime import GuideRuntimeMixin
 
 MAX_TOOL_ROUNDS = 6
 MAX_TOOL_CALLS_PER_ROUND = 2
@@ -37,7 +39,7 @@ class SessionRuntimeState:
     summary_cache: Dict[Tuple[str, float, int, int], str] = field(default_factory=dict)
 
 
-class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
+class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
     def __init__(self, config: AppConfig, session_store: SessionStore):
         self.config = config
         self.session_store = session_store
@@ -183,6 +185,7 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
         forced_cat_path = self._prompt_direct_file_path(prompt)
         direct_file_summary = self._is_direct_file_summary_prompt(prompt)
         direct_file_trace = self._is_direct_file_trace_prompt(prompt)
+        direct_file_guide = self._is_direct_file_guide_prompt(prompt)
         reader_completed_paths = set()
 
         if forced_cat_path is not None:
@@ -191,6 +194,16 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
             reader_completed_paths.add(forced_cat_path)
             if direct_file_summary:
                 final_text = self._finalize_direct_file_summary_output(session_id, prompt, reader_summary.strip())
+                final_raw_content = [{"type": "text", "text": final_text}]
+                self.session_store.append_message(
+                    session_id,
+                    "assistant",
+                    final_text,
+                    metadata={"raw_content": final_raw_content},
+                )
+                return final_text
+            if direct_file_guide:
+                final_text = reader_summary.strip()
                 final_raw_content = [{"type": "text", "text": final_text}]
                 self.session_store.append_message(
                     session_id,
@@ -578,10 +591,15 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
 
     def _system_prompt_for_prompt(self, prompt: str) -> str:
         lowered = prompt.lower()
+        guide_mode = self._is_guide_prompt(prompt)
         if self._is_direct_file_trace_prompt(prompt):
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX + TRACE_APPENDIX
         if self._prompt_direct_file_path(prompt):
+            if guide_mode:
+                return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX + GUIDE_APPENDIX
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX
+        if guide_mode:
+            return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + GUIDE_APPENDIX
         if any(keyword in lowered for keyword in ("trace", "tracing", "call path", "used", "where ", "flow")):
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + TRACE_APPENDIX
         return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX

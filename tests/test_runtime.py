@@ -605,6 +605,82 @@ class FakeBriefDirectSummaryBackend(BaseBackend):
         return True
 
 
+class FakeGuideDirectBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.reader_system_prompt = None
+        self.planner_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_system_prompt = system_prompt
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "Checklist:\n"
+                    "1. Read the project overview so you know what this tool is for.\n"
+                    "2. Run the documented CLI command in the order shown.\n"
+                    "3. Compare the output with the listed success cues.\n"
+                    "Success check: the command finishes and the described result appears.\n"
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeGuideFollowUpBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = []
+        self.reader_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_turn_count += 1
+            self.reader_messages.append(list(messages))
+            if self.reader_turn_count == 1:
+                return AssistantTurn(
+                    text=(
+                        "Beginner summary:\n"
+                        "- Goal: explain what the project does.\n"
+                        "- You will accomplish: understand the basic purpose.\n"
+                        "- Prepare first: have Python ready.\n"
+                        "- Main steps: read the overview, setup, and command examples.\n"
+                        "- Common beginner confusion: this project is read-only.\n"
+                        "Sources: README.md:1-6"
+                    )
+                )
+            return AssistantTurn(
+                text=(
+                    "Troubleshooting:\n"
+                    "- Likely current step: the first run or setup stage.\n"
+                    "- Relevant source section: setup and command examples.\n"
+                    "- Possible causes: the user skipped an environment prerequisite.\n"
+                    "- What to check first: compare the setup steps with the previous beginner summary.\n"
+                    "- What to do next: verify the documented setup before retrying.\n"
+                    "Sources: README.md:1-12"
+                )
+            )
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
 class FakeInsufficientReaderSummaryBackend(BaseBackend):
     def __init__(self):
         self.reader_turn_count = 0
@@ -957,6 +1033,152 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIn("Evidence:", result)
             self.assertIn("Suggested keep:", result)
             self.assertFalse(runtime._is_brief_summary_prompt("Give a summary for crush_py/store/session_store.py."))
+
+    def test_detects_direct_file_guide_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            prompt = (
+                "Guide mode:\n"
+                "User request: turn README.md into a checklist\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible"
+            )
+            self.assertTrue(runtime._is_guide_prompt(prompt))
+            self.assertTrue(runtime._is_direct_file_guide_prompt(prompt))
+            self.assertEqual(runtime._guide_output_mode(prompt), "checklist")
+
+    def test_direct_file_guide_uses_reader_fast_path_and_appends_sources(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("Intro\nStep one\nStep two\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeGuideDirectBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask(
+                "Guide mode:\n"
+                "User request: turn README.md into a checklist\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("Checklist:", result)
+            self.assertIn("Success check:", result)
+            self.assertIn("Sources: README.md:1-3", result)
+            self.assertIsNotNone(backend.reader_messages)
+            self.assertIn("Always end with `Sources:`", backend.reader_messages[0]["content"])
+
+    def test_guide_prompt_uses_guide_system_prompt_appendix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            prompt = (
+                "Guide mode:\n"
+                "User request: which docs should I read first to learn Program A?\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible"
+            )
+            system_prompt = runtime._system_prompt_for_prompt(prompt)
+
+            self.assertIn("Guide mode:", system_prompt)
+            self.assertIn("answer from workspace docs when possible", system_prompt)
+
+    def test_guide_follow_up_on_same_file_reuses_previous_reader_summary_context(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text(
+                "Overview\nSetup\nRun command\nTroubleshooting\n",
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeGuideFollowUpBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            first_result = runtime.ask(
+                "Guide mode:\n"
+                "User request: summarize README.md for a beginner\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+            second_result = runtime.ask(
+                "Guide mode:\n"
+                "User request: I am stuck during setup in README.md\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertIn("Beginner summary:", first_result)
+            self.assertIn("Troubleshooting:", second_result)
+            self.assertEqual(len(backend.reader_messages), 2)
+            self.assertNotIn("Previous guide summary", backend.reader_messages[0][0]["content"])
+            self.assertIn("Previous guide summary for README.md", backend.reader_messages[1][0]["content"])
+            self.assertIn("Reuse the previous guide summary first instead of rereading the full doc.", backend.reader_messages[1][0]["content"])
+            self.assertIn("Beginner summary:", backend.reader_messages[1][0]["content"])
+            cat_tool_uses = [
+                message
+                for message in messages
+                if message.kind == "tool_use" and message.metadata.get("tool") == "cat"
+            ]
+            self.assertEqual(len(cat_tool_uses), 1)
+            second_reader_result = next(
+                message
+                for message in reversed(messages)
+                if message.kind == "tool_result" and message.metadata.get("tool") == "reader"
+            )
+            self.assertEqual(second_reader_result.metadata["args"]["coverage"], "reused")
+            self.assertEqual(messages[-1].content, second_result)
+
+    def test_guide_exact_line_follow_up_rereads_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text(
+                "Overview\nSetup\nRun command\nTroubleshooting\n",
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeGuideFollowUpBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            runtime.ask(
+                "Guide mode:\n"
+                "User request: summarize README.md for a beginner\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+            runtime.ask(
+                "Guide mode:\n"
+                "User request: which exact lines in README.md talk about setup?\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(len(backend.reader_messages), 2)
+            self.assertNotIn("Reuse the previous guide summary first", backend.reader_messages[1][0]["content"])
+            cat_tool_uses = [
+                message
+                for message in messages
+                if message.kind == "tool_use" and message.metadata.get("tool") == "cat"
+            ]
+            self.assertEqual(len(cat_tool_uses), 2)
 
     def test_brief_direct_file_summary_omits_evidence_and_review_scaffolding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
