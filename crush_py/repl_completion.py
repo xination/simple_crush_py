@@ -26,6 +26,10 @@ def build_completer(runtime):
 def complete_input(runtime, buffer_text: str, text: str):
     from .repl_commands import COMMANDS, safe_split
 
+    if text.startswith("@"):
+        path_matches = complete_workspace_paths(runtime, text[1:])
+        return ["@" + m for m in path_matches]
+
     stripped = buffer_text.lstrip()
     if not stripped or (stripped.startswith("/") and " " not in stripped):
         return [item for item in COMMANDS if item.startswith(text)]
@@ -52,12 +56,13 @@ def complete_input(runtime, buffer_text: str, text: str):
 def complete_workspace_paths(runtime, prefix: str):
     workspace_root = runtime.config.workspace_root
     normalized = prefix.replace("\\ ", " ")
-    base_path = (workspace_root / normalized).resolve()
 
-    if prefix.endswith("/"):
+    if prefix == "" or prefix.endswith("/"):
+        base_path = (workspace_root / normalized).resolve()
         parent = base_path
         fragment = ""
     else:
+        base_path = (workspace_root / normalized).resolve()
         parent = base_path.parent
         fragment = base_path.name
 

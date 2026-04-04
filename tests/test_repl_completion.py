@@ -55,6 +55,46 @@ class ReplCompletionTests(unittest.TestCase):
         matches = complete_input(runtime, "/use sess", "sess")
         self.assertEqual(matches, ["sess-1"])
 
+    def test_complete_input_handles_mention_prefix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("", encoding="utf-8")
+            (workspace / "src").mkdir()
+            runtime = FakeRuntime(workspace)
+
+            matches = complete_input(runtime, "@R", "@R")
+            self.assertEqual(matches, ["@README.md"])
+
+            matches = complete_input(runtime, "@", "@")
+            self.assertIn("@README.md", matches)
+            self.assertIn("@src/", matches)
+
+    def test_complete_workspace_paths_handles_empty_prefix_as_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "a.txt").write_text("", encoding="utf-8")
+            runtime = FakeRuntime(workspace)
+
+            self.assertEqual(complete_workspace_paths(runtime, ""), ["a.txt"])
+
+    def test_complete_input_escapes_spaces_in_mentions(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "file with space.txt").write_text("", encoding="utf-8")
+            runtime = FakeRuntime(workspace)
+
+            matches = complete_input(runtime, "@file", "@file")
+            self.assertEqual(matches, ["@file\\ with\\ space.txt"])
+
+    def test_complete_input_cat_still_completes_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("", encoding="utf-8")
+            runtime = FakeRuntime(workspace)
+
+            matches = complete_input(runtime, "/cat R", "R")
+            self.assertEqual(matches, ["README.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
