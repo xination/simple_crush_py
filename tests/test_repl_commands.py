@@ -1,0 +1,104 @@
+import io
+import unittest
+from contextlib import redirect_stdout
+from dataclasses import dataclass
+
+from crush_py.repl_commands import parse_optional_limit, safe_split, try_handle_command
+
+
+@dataclass
+class FakeSession:
+    id: str
+    backend: str
+    title: str = "Demo"
+
+
+class FakeSessionStore:
+    def __init__(self, sessions=None):
+        self._sessions = sessions or []
+
+    def list_sessions(self):
+        return list(self._sessions)
+
+
+class FakeRuntime:
+    def __init__(self):
+        self.active_backend_name = "demo"
+        self.session_store = FakeSessionStore([FakeSession("s-1", "demo", "First session")])
+        self.tool_calls = []
+        self.used_sessions = []
+        self.new_session_calls = 0
+
+    def new_session(self):
+        self.new_session_calls += 1
+        return FakeSession("new-session", "demo")
+
+    def available_backends(self):
+        return ["demo", "other"]
+
+    def available_tools(self):
+        return ["cat", "grep"]
+
+    def use_session(self, session_id):
+        if session_id == "missing":
+            raise FileNotFoundError(session_id)
+        self.used_sessions.append(session_id)
+        return FakeSession(session_id, "demo")
+
+    def run_tool(self, name, payload):
+        self.tool_calls.append((name, payload))
+        return "tool-result:{0}:{1}".format(name, payload)
+
+
+class ReplCommandsTests(unittest.TestCase):
+    def test_safe_split_falls_back_when_quotes_are_unbalanced(self):
+        self.assertEqual(safe_split('/find "unterminated notes.txt'), ["/find", '"unterminated', "notes.txt"])
+
+    def test_parse_optional_limit_uses_default(self):
+        self.assertEqual(parse_optional_limit(None, "usage"), 20)
+
+    def test_parse_optional_limit_rejects_non_positive_values(self):
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            result = parse_optional_limit("0", "Usage: /history [LIMIT]")
+        self.assertIsNone(result)
+        self.assertIn("Usage: /history [LIMIT]", stdout.getvalue())
+
+    def test_try_handle_command_runs_tool_command(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/grep needle src *.py")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(runtime.tool_calls, [("grep", {"pattern": "needle", "path": "src", "include": "*.py"})])
+        self.assertIn("tool-result:grep", stdout.getvalue())
+
+    def test_try_handle_command_handles_unknown_session(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/use missing")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertIn("Session not found: missing", stdout.getvalue())
+
+    def test_try_handle_command_returns_exit_for_quit(self):
+        runtime = FakeRuntime()
+        handled, exit_code = try_handle_command(runtime, "/quit")
+
+        self.assertTrue(handled)
+        self.assertEqual(exit_code, 0)
+
+    def test_try_handle_command_returns_not_handled_for_plain_prompt(self):
+        runtime = FakeRuntime()
+        handled, exit_code = try_handle_command(runtime, "summarize runtime.py")
+
+        self.assertFalse(handled)
+        self.assertIsNone(exit_code)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -212,6 +212,89 @@ class FakeInlineCatResultBackend(BaseBackend):
         return True
 
 
+class FakeVariableTraceDirectBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.reader_system_prompt = None
+        self.planner_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_system_prompt = system_prompt
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "Variable trace for human review:\n\n"
+                    "Variable: session_id\n"
+                    "Confirmed file: crush_py/store/session_store.py\n\n"
+                    "1. Defined or first assigned at line 10 inside `create_session`\n"
+                    "   Evidence: `session_id = payload.get(\"session_id\") or str(uuid4())`\n\n"
+                    "2. Reassigned at `No confirmed reassignment in reviewed windows`\n"
+                    "   Evidence: `session_id` keeps the same local binding in the reviewed slices\n\n"
+                    "3. Passed as an argument at line 18 into `SessionMeta(...)`\n"
+                    "   Evidence: `SessionMeta(session_id=session_id, created_at=created_at)`\n\n"
+                    "4. Used in condition, return, or storage at line 31 when building `_session_dir(session_id)`\n"
+                    "   Evidence: `return self._session_dir(session_id)`\n\n"
+                    "Unresolved uncertainty:\n"
+                    "- The trace is limited to the reviewed grep windows in this file."
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeFlowTraceDirectBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.reader_system_prompt = None
+        self.planner_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_system_prompt = system_prompt
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "Flow trace for human review:\n\n"
+                    "Target: prompt\n"
+                    "Confirmed file: crush_py/agent/runtime.py\n"
+                    "Coverage: local\n\n"
+                    "1. Entry point\n"
+                    "   Evidence: `def ask(self, prompt: str, stream: bool = False) -> str:`\n\n"
+                    "2. Immediate transformations or normalization\n"
+                    "   Evidence: `prompt.strip()` inside `state.entry_point = prompt.strip()`\n\n"
+                    "3. Storage or state updates\n"
+                    "   Evidence: `state.entry_point = prompt.strip()`\n\n"
+                    "4. Downstream calls or handoff sites\n"
+                    "   Evidence: `No confirmed downstream handoff in reviewed blocks`\n\n"
+                    "5. Confirmed local flow\n"
+                    "   Evidence: `ask(prompt)` -> `prompt.strip()` -> `state.entry_point`\n\n"
+                    "Unresolved uncertainty:\n"
+                    "- The trace is limited to the reviewed local blocks."
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
 class FakePlannerReaderBackend(BaseBackend):
     def __init__(self):
         self.planner_turn_count = 0
@@ -968,6 +1051,132 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertTrue(result.startswith("Preliminary summary (partial file coverage).\n1. "))
             self.assertNotIn("Evidence:", result)
+
+    def test_detects_direct_file_variable_trace_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "store"
+            target.mkdir(parents=True)
+            (target / "session_store.py").write_text("session_id = None\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            self.assertTrue(
+                runtime._is_direct_file_variable_trace_prompt(
+                    "Trace the variable session_id in crush_py/store/session_store.py"
+                )
+            )
+            self.assertEqual(
+                runtime._prompt_direct_trace_variable(
+                    "Trace how session_id flows inside crush_py/store/session_store.py"
+                ),
+                "session_id",
+            )
+            self.assertTrue(
+                runtime._is_direct_file_flow_trace_prompt(
+                    "Trace how session_id flows inside crush_py/store/session_store.py"
+                )
+            )
+            self.assertFalse(
+                runtime._is_direct_file_variable_trace_prompt(
+                    "Trace how session_id flows inside crush_py/store/session_store.py"
+                )
+            )
+
+    def test_direct_file_variable_trace_uses_outline_grep_and_local_cat_reads(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "store"
+            target.mkdir(parents=True)
+            (target / "session_store.py").write_text(
+                "\n".join(
+                    [
+                        "from dataclasses import dataclass",
+                        "",
+                        "@dataclass",
+                        "class SessionMeta:",
+                        "    session_id: str",
+                        "",
+                        "def create_session(payload):",
+                        "    created_at = payload.get(\"created_at\")",
+                        "    session_id = payload.get(\"session_id\") or \"generated\"",
+                        "    meta = SessionMeta(session_id=session_id)",
+                        "    if session_id:",
+                        "        return _session_dir(session_id)",
+                        "    return meta",
+                        "",
+                        "def _session_dir(session_id):",
+                        "    return f\"sessions/{session_id}\"",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeVariableTraceDirectBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("Trace the variable session_id in crush_py/store/session_store.py")
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("Variable trace for human review:", result)
+            self.assertIsNotNone(backend.reader_messages)
+            prompt_text = backend.reader_messages[0]["content"]
+            self.assertIn("Variable: session_id", prompt_text)
+            self.assertIn("outline first, grep the variable inside this file", prompt_text)
+            payloads = backend.reader_messages[1]["content"]
+            tool_names = [payload["tool_name"] for payload in payloads]
+            self.assertIn("get_outline", tool_names)
+            self.assertIn("grep", tool_names)
+            self.assertIn("cat", tool_names)
+            grep_payload = next(payload for payload in payloads if payload["tool_name"] == "grep")
+            self.assertIn("crush_py/store/session_store.py:", grep_payload["content"])
+            cat_payloads = [payload for payload in payloads if payload["tool_name"] == "cat"]
+            self.assertTrue(cat_payloads)
+            self.assertTrue(all(not payload["tool_use_id"].startswith("reader-cat-full:") for payload in cat_payloads))
+
+    def test_direct_file_flow_trace_reads_containing_function_blocks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "agent"
+            target.mkdir(parents=True)
+            (target / "runtime.py").write_text(
+                "\n".join(
+                    [
+                        "class AgentRuntime:",
+                        "    def ask(self, prompt: str, stream: bool = False) -> str:",
+                        "        state = self._state()",
+                        "        if not state.entry_point:",
+                        "            state.entry_point = prompt.strip()",
+                        "        return state.entry_point",
+                        "",
+                        "    def other(self):",
+                        "        return 'x'",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeFlowTraceDirectBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("Trace how prompt flows inside crush_py/agent/runtime.py")
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("Flow trace for human review:", result)
+            prompt_text = backend.reader_messages[0]["content"]
+            self.assertIn("Tracked name: prompt", prompt_text)
+            self.assertIn("containing function or method blocks", prompt_text)
+            payloads = backend.reader_messages[1]["content"]
+            cat_payloads = [payload for payload in payloads if payload["tool_name"] == "cat"]
+            self.assertTrue(cat_payloads)
+            self.assertTrue(any("offset=\"1\"" in payload["content"] or "offset=\"0\"" in payload["content"] for payload in cat_payloads))
+            reader_result = next(message for message in messages if message.kind == "tool_result" and message.metadata.get("tool") == "reader")
+            self.assertEqual(reader_result.metadata["args"]["mode"], "flow_trace")
+            self.assertEqual(reader_result.metadata["args"]["coverage"], "local")
 
     def test_trace_prompt_does_not_use_direct_summary_fast_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
