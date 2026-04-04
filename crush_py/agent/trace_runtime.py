@@ -2,6 +2,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..backends.base import BackendError, BaseBackend
+from ..output_sanitize import sanitize_text
 from ..tools.base import ToolError
 from ..tools.get_outline import load_outline_symbols
 from ..tools.outline_providers import OutlineSymbol
@@ -52,8 +53,19 @@ class TraceRuntimeMixin:
             },
             {"role": "user", "content": payloads},
         ]
-        turn = backend.generate_turn(BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX, conversation, tools=None)
-        final_text = self._append_variable_trace_postprocessing(turn.text.strip(), coverage, variable_name, raw_payloads)
+        try:
+            turn = self._generate_turn_with_retry(
+                backend,
+                BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
+                conversation,
+                tools=None,
+            )
+            model_text = sanitize_text(turn.text).strip()
+        except BackendError as exc:
+            model_text = ""
+            coverage = "partial"
+            notes = "{0}; backend fallback: {1}".format(notes, exc).strip("; ")
+        final_text = self._append_variable_trace_postprocessing(model_text, coverage, variable_name, raw_payloads, notes)
 
         state = self._state_for_session(session_id)
         state.file_summaries[rel_path] = _single_line(final_text, 240)
@@ -70,6 +82,8 @@ class TraceRuntimeMixin:
                 "tool_arguments": {
                     "path": rel_path,
                     "coverage": coverage,
+                    "trace_status": _trace_status(coverage),
+                    "confidence": _trace_confidence(coverage),
                     "mode": "variable_trace",
                     "variable": variable_name,
                 },
@@ -115,8 +129,19 @@ class TraceRuntimeMixin:
             },
             {"role": "user", "content": payloads},
         ]
-        turn = backend.generate_turn(BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX, conversation, tools=None)
-        final_text = self._append_flow_trace_postprocessing(turn.text.strip(), coverage, variable_name, raw_payloads)
+        try:
+            turn = self._generate_turn_with_retry(
+                backend,
+                BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
+                conversation,
+                tools=None,
+            )
+            model_text = sanitize_text(turn.text).strip()
+        except BackendError as exc:
+            model_text = ""
+            coverage = "partial"
+            notes = "{0}; backend fallback: {1}".format(notes, exc).strip("; ")
+        final_text = self._append_flow_trace_postprocessing(model_text, coverage, variable_name, raw_payloads, notes)
 
         state = self._state_for_session(session_id)
         state.file_summaries[rel_path] = _single_line(final_text, 240)
@@ -133,6 +158,8 @@ class TraceRuntimeMixin:
                 "tool_arguments": {
                     "path": rel_path,
                     "coverage": coverage,
+                    "trace_status": _trace_status(coverage),
+                    "confidence": _trace_confidence(coverage),
                     "mode": "flow_trace",
                     "variable": variable_name,
                 },
@@ -437,16 +464,19 @@ class TraceRuntimeMixin:
         coverage: str,
         variable_name: str,
         payloads: List[Dict[str, Any]],
+        notes: str = "",
     ) -> str:
-        final_text = text.strip()
+        final_text = sanitize_text(text).strip()
         extra_uncertainty_notes: List[str] = []
         if coverage == "partial":
             extra_uncertainty_notes.append("This trace is partial because not every candidate region was reviewed.")
         elif coverage == "local":
             extra_uncertainty_notes.append("This trace is limited to the reviewed local blocks.")
             extra_uncertainty_notes.append("It does not yet prove downstream flow beyond the reviewed symbol.")
+        if notes:
+            extra_uncertainty_notes.extend(_notes_to_uncertainty_items(notes))
         facts = _collect_flow_trace_facts(payloads, variable_name, self.config.workspace_root)
-        return _normalize_trace_output(final_text, extra_uncertainty_notes, facts=facts, coverage=coverage)
+        return _normalize_flow_trace_output(final_text, facts, coverage, extra_uncertainty_notes)
 
     def _append_variable_trace_postprocessing(
         self,
@@ -454,16 +484,19 @@ class TraceRuntimeMixin:
         coverage: str,
         variable_name: str,
         payloads: List[Dict[str, Any]],
+        notes: str = "",
     ) -> str:
-        final_text = text.strip()
+        final_text = sanitize_text(text).strip()
         extra_uncertainty_notes: List[str] = []
         if coverage == "partial":
             extra_uncertainty_notes.append("This trace is partial because not every candidate region was reviewed.")
         elif coverage == "local":
             extra_uncertainty_notes.append("This trace is limited to the reviewed local blocks.")
             extra_uncertainty_notes.append("It does not yet prove downstream use in helper methods or later parts of the file.")
+        if notes:
+            extra_uncertainty_notes.extend(_notes_to_uncertainty_items(notes))
         facts = _collect_variable_trace_facts(payloads, variable_name, self.config.workspace_root)
-        return _normalize_trace_output(final_text, extra_uncertainty_notes, facts=facts, coverage=coverage)
+        return _normalize_variable_trace_output(final_text, facts, coverage, extra_uncertainty_notes)
 
 
 def _single_line(text: str, max_length: int = 160) -> str:
@@ -618,21 +651,12 @@ def _symbol_can_bound_block(symbol: OutlineSymbol) -> bool:
     return symbol.kind in {"class", "function", "method"}
 
 
-def _normalize_trace_output(
+def _normalize_variable_trace_output(
     text: str,
+    facts: Dict[str, Any],
+    coverage: str,
     extra_uncertainty_notes: Optional[List[str]] = None,
-    facts: Optional[Dict[str, Any]] = None,
-    coverage: str = "",
 ) -> str:
-    normalized = text.strip()
-    if normalized.startswith("Variable trace for human review:"):
-        normalized = _normalize_variable_trace_output(normalized, facts or {}, coverage)
-    elif normalized.startswith("Flow trace for human review:"):
-        normalized = _normalize_flow_trace_output(normalized, facts or {}, coverage)
-    return _merge_uncertainty_sections(normalized, extra_uncertainty_notes or [])
-
-
-def _normalize_variable_trace_output(text: str, facts: Dict[str, Any], coverage: str) -> str:
     lines = text.splitlines()
     variable_name = ""
     confirmed_file = ""
@@ -667,10 +691,10 @@ def _normalize_variable_trace_output(text: str, facts: Dict[str, Any], coverage:
         "",
         "Variable: {0}".format(tracked_name or "<unknown>"),
         "Confirmed file: {0}".format(confirmed_file or "<unknown>"),
+        "Trace status: {0}".format(_trace_status(coverage)),
+        "Confidence: {0}".format(_trace_confidence(coverage)),
     ]
-    coverage_text = _variable_trace_coverage_text(coverage, facts)
-    if coverage_text:
-        section_lines.append("Coverage: {0}".format(coverage_text))
+    section_lines.extend(_render_variable_coverage_lines(coverage, facts))
     section_lines.append("")
 
     definition = facts.get("definition")
@@ -678,34 +702,31 @@ def _normalize_variable_trace_output(text: str, facts: Dict[str, Any], coverage:
     argument = facts.get("argument")
     role = _best_confirmed_role(facts)
 
-    section_lines.extend(_render_variable_trace_section(1, "Defined or first assigned", definition, "No confirmed definition in reviewed block."))
+    section_lines.extend(_render_variable_trace_section(1, "Defined at", definition, "No confirmed definition in the reviewed block."))
     section_lines.append("")
-    section_lines.extend(_render_variable_trace_section(2, "Reassignment", reassignment, "No confirmed reassignment in the reviewed block."))
+    section_lines.extend(_render_variable_trace_section(2, "Reassigned at", reassignment, "No confirmed reassignment in the reviewed block."))
     section_lines.append("")
-    section_lines.extend(
-        _render_variable_trace_section(3, "Passed as an argument", argument, "No confirmed argument-passing site was found in the reviewed block.")
-    )
+    section_lines.extend(_render_variable_trace_section(3, "Passed to", argument, "No confirmed argument-passing site was found in the reviewed block."))
     section_lines.append("")
     section_lines.extend(_render_variable_trace_role_section(4, role))
-
-    flow_lines = _confirmed_local_flow_lines(facts, tracked_name)
-    if flow_lines:
-        section_lines.append("")
-        section_lines.append("Confirmed local flow")
-        for item in flow_lines:
-            section_lines.append("- {0}".format(item))
-
-    concrete_uncertainty = _useful_model_uncertainty_notes(model_uncertainty)
-    if concrete_uncertainty:
-        section_lines.append("")
-        section_lines.append("Unresolved uncertainty:")
-        for note in concrete_uncertainty:
-            section_lines.append("- {0}".format(note))
+    section_lines.append("")
+    section_lines.extend(
+        _render_unknown_section(
+            5,
+            _useful_model_uncertainty_notes(model_uncertainty),
+            extra_uncertainty_notes or [],
+        )
+    )
 
     return "\n".join(section_lines).strip()
 
 
-def _normalize_flow_trace_output(text: str, facts: Dict[str, Any], coverage: str) -> str:
+def _normalize_flow_trace_output(
+    text: str,
+    facts: Dict[str, Any],
+    coverage: str,
+    extra_uncertainty_notes: Optional[List[str]] = None,
+) -> str:
     lines = text.splitlines()
     target_name = ""
     confirmed_file = ""
@@ -743,10 +764,10 @@ def _normalize_flow_trace_output(text: str, facts: Dict[str, Any], coverage: str
         "",
         "Target: {0}".format(tracked_name or "<unknown>"),
         "Confirmed file: {0}".format(confirmed_file or "<unknown>"),
+        "Trace status: {0}".format(_trace_status(coverage)),
+        "Confidence: {0}".format(_trace_confidence(coverage)),
     ]
-    coverage_text = _flow_trace_coverage_text(coverage, facts)
-    if coverage_text:
-        section_lines.append("Coverage: {0}".format(coverage_text))
+    section_lines.extend(_render_flow_coverage_lines(coverage, facts))
     if reviewed_symbol:
         section_lines.append("Reviewed symbol: {0}".format(reviewed_symbol))
     if reviewed_span:
@@ -758,7 +779,7 @@ def _normalize_flow_trace_output(text: str, facts: Dict[str, Any], coverage: str
     section_lines.extend(
         _render_flow_trace_section(
             2,
-            "Confirmed local transformation",
+            "Immediate transform",
             facts.get("transformation"),
             "No confirmed local transformation in the reviewed block.",
         )
@@ -767,7 +788,7 @@ def _normalize_flow_trace_output(text: str, facts: Dict[str, Any], coverage: str
     section_lines.extend(
         _render_flow_trace_section(
             3,
-            "Confirmed storage or persistence",
+            "Stored or logged",
             _best_storage_or_persistence_fact(facts),
             "No confirmed storage or persistence call in the reviewed block.",
         )
@@ -776,26 +797,19 @@ def _normalize_flow_trace_output(text: str, facts: Dict[str, Any], coverage: str
     section_lines.extend(
         _render_flow_trace_section(
             4,
-            "Confirmed downstream handoff",
+            "Hand-off",
             facts.get("downstream"),
             "No confirmed downstream handoff in the reviewed block.",
         )
     )
     section_lines.append("")
-    flow_lines = _confirmed_flow_steps(facts, tracked_name)
-    section_lines.append("5. Confirmed local flow")
-    if flow_lines:
-        for item in flow_lines:
-            section_lines.append("   - {0}".format(item))
-    else:
-        section_lines.append("   No confirmed local flow chain was assembled from the reviewed evidence.")
-
-    concrete_uncertainty = _useful_flow_uncertainty_notes(model_uncertainty)
-    if concrete_uncertainty:
-        section_lines.append("")
-        section_lines.append("Unresolved uncertainty:")
-        for note in concrete_uncertainty:
-            section_lines.append("- {0}".format(note))
+    section_lines.extend(
+        _render_unknown_section(
+            5,
+            _useful_flow_uncertainty_notes(model_uncertainty),
+            extra_uncertainty_notes or [],
+        )
+    )
 
     return "\n".join(section_lines).strip()
 
@@ -905,6 +919,39 @@ def _merge_uncertainty_sections(text: str, extra_notes: List[str]) -> str:
     if not body:
         return uncertainty_block
     return body + "\n\n" + uncertainty_block
+
+
+def _notes_to_uncertainty_items(notes: str) -> List[str]:
+    items: List[str] = []
+    for part in notes.split(";"):
+        cleaned = part.strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    kept: List[str] = []
+    for item in items:
+        cleaned = item.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        kept.append(cleaned)
+    return kept
+
+
+def _trace_status(coverage: str) -> str:
+    if coverage == "complete":
+        return "complete"
+    return "partial"
+
+
+def _trace_confidence(coverage: str) -> str:
+    if coverage == "complete":
+        return "file-only"
+    return "local-only"
 
 
 def _normalized_uncertainty_notes(notes: List[str]) -> List[str]:
@@ -1115,6 +1162,17 @@ def _variable_trace_coverage_text(coverage: str, facts: Dict[str, Any]) -> str:
     return ""
 
 
+def _render_variable_coverage_lines(coverage: str, facts: Dict[str, Any]) -> List[str]:
+    scope = _variable_trace_coverage_text(coverage, facts) or "local"
+    return [
+        "Coverage:",
+        "- scope: {0}".format(scope),
+        "- selection: grep-confirmed local windows",
+        "- full file: {0}".format("yes" if coverage == "complete" else "no"),
+        "- cross file: no",
+    ]
+
+
 def _render_variable_trace_section(
     number: int,
     label: str,
@@ -1124,7 +1182,7 @@ def _render_variable_trace_section(
     if fact:
         location = _fact_location(fact)
         return [
-            "{0}. {1} at {2}".format(number, label, location),
+            "{0}. {1}{2}{3}".format(number, label, _section_label_separator(label), location),
             "   Evidence: {0}".format(fact["evidence"]),
         ]
     return [
@@ -1141,7 +1199,7 @@ def _render_flow_trace_section(
 ) -> List[str]:
     if fact:
         return [
-            "{0}. {1} at {2}".format(number, label, _fact_location(fact)),
+            "{0}. {1}{2}{3}".format(number, label, _section_label_separator(label), _fact_location(fact)),
             "   Evidence: {0}".format(fact["evidence"]),
         ]
     return [
@@ -1154,13 +1212,31 @@ def _render_variable_trace_role_section(number: int, fact: Optional[Dict[str, An
     if fact:
         role_label = str(fact.get("role_label", "")).strip() or "Other confirmed local role"
         return [
-            "{0}. {1} at {2}".format(number, role_label, _fact_location(fact)),
+            "{0}. Used in".format(number),
+            "   Role: {0} at {1}".format(role_label, _fact_location(fact)),
             "   Evidence: {0}".format(fact["evidence"]),
         ]
     return [
-        "{0}. Other confirmed local roles".format(number),
+        "{0}. Used in".format(number),
         "   No additional confirmed local role was found in the reviewed block.",
     ]
+
+
+def _render_unknown_section(number: int, model_notes: List[str], extra_notes: List[str]) -> List[str]:
+    notes = _dedupe_preserve_order(model_notes + extra_notes)
+    lines = ["{0}. Unknown / not proven".format(number)]
+    if notes:
+        for note in notes:
+            lines.append("   - {0}".format(note))
+        return lines
+    return lines + ["   Nothing else was proven from the reviewed evidence."]
+
+
+def _section_label_separator(label: str) -> str:
+    normalized = label.strip().lower()
+    if normalized.endswith(("at", "to", "in")):
+        return " "
+    return " at "
 
 
 def _fact_location(fact: Dict[str, Any]) -> str:
@@ -1414,6 +1490,18 @@ def _flow_trace_coverage_text(coverage: str, facts: Dict[str, Any]) -> str:
     if coverage:
         return coverage
     return ""
+
+
+def _render_flow_coverage_lines(coverage: str, facts: Dict[str, Any]) -> List[str]:
+    scope = _flow_trace_coverage_text(coverage, facts) or "local"
+    selection = "containing symbol blocks" if facts.get("reviewed_symbol_qualname") else "grep-confirmed local windows"
+    return [
+        "Coverage:",
+        "- scope: {0}".format(scope),
+        "- selection: {0}".format(selection),
+        "- full file: {0}".format("yes" if coverage == "complete" else "no"),
+        "- cross file: no",
+    ]
 
 
 def _confirmed_flow_steps(facts: Dict[str, Any], variable_name: str) -> List[str]:

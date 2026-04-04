@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Tuple
 
 from .base import ToolError
 
@@ -36,3 +37,19 @@ def should_skip_path(workspace_root: Path, search_root: Path, path: Path) -> boo
 
     descendant_parts = path_parts[len(root_parts) :]
     return any(part in DEFAULT_IGNORED_DIR_NAMES for part in descendant_parts)
+
+
+TEXT_ENCODING_CANDIDATES = ("utf-8", "utf-8-sig", "cp950", "big5", "latin-1")
+
+
+def read_text_with_fallback(path: Path) -> Tuple[str, str]:
+    last_error = None
+    for encoding in TEXT_ENCODING_CANDIDATES:
+        try:
+            return path.read_text(encoding=encoding), encoding
+        except UnicodeDecodeError as exc:
+            last_error = exc
+            continue
+        except OSError as exc:
+            raise ToolError("Unable to read file {0}: {1}".format(path, exc))
+    raise ToolError("File could not be decoded with supported encodings: {0} ({1})".format(path, last_error))

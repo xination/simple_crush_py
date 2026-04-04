@@ -2,7 +2,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from .base import BaseTool, ToolError
-from .common import ensure_in_workspace
+from .common import ensure_in_workspace, read_text_with_fallback
 
 
 DEFAULT_LIMIT = 80
@@ -21,7 +21,7 @@ class CatTool(BaseTool):
         return {
             "name": self.name,
             "description": (
-                "Read a UTF-8 text file with line numbers. Use this only after you already know the exact "
+                "Read a text file with line numbers and encoding fallback. Use this only after you already know the exact "
                 "workspace-relative file path. Supports paged reads via `offset` and `limit`."
             ),
             "input_schema": {
@@ -69,13 +69,8 @@ class CatTool(BaseTool):
         if full and abs_path.stat().st_size > MAX_FILE_SIZE:
             raise ToolError("File is too large: {0}".format(rel_path))
 
-        try:
-            with abs_path.open("r", encoding="utf-8") as handle:
-                lines = handle.readlines()
-        except UnicodeDecodeError:
-            raise ToolError("File is not valid UTF-8: {0}".format(rel_path))
-        except OSError as exc:
-            raise ToolError("Unable to read file {0}: {1}".format(rel_path, exc))
+        text, encoding = read_text_with_fallback(abs_path)
+        lines = text.splitlines(keepends=True)
 
         if full:
             offset = 0
@@ -85,7 +80,7 @@ class CatTool(BaseTool):
             sliced = lines[offset : offset + limit]
         body = self._format_lines(sliced, start_line=offset + 1)
         parts = [
-            '<file path="{0}" offset="{1}" limit="{2}">'.format(rel_path, offset, limit),
+            '<file path="{0}" offset="{1}" limit="{2}" encoding="{3}">'.format(rel_path, offset, limit, encoding),
             body,
             "</file>",
         ]

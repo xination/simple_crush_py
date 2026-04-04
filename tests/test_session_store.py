@@ -57,6 +57,7 @@ class SessionStoreTests(unittest.TestCase):
                     "tool_arguments": {"path": "notes.txt"},
                     "tool_use_id": "tool-1",
                     "summary": "Read notes.txt lines 1-3.",
+                    "encoding_used": "cp950",
                     "raw_content": [{"type": "tool_result", "content": "full text"}],
                     "backend_content": [{"type": "tool_result", "content": "full text"}],
                 },
@@ -67,6 +68,7 @@ class SessionStoreTests(unittest.TestCase):
             self.assertEqual(messages[0].metadata["tool"], "cat")
             self.assertNotIn("agent", messages[0].metadata)
             self.assertEqual(messages[0].metadata["summary"], "Read notes.txt lines 1-3.")
+            self.assertEqual(messages[0].metadata["encoding"], "cp950")
             self.assertNotIn("raw_content", messages[0].metadata)
             self.assertNotIn("backend_content", messages[0].metadata)
 
@@ -138,6 +140,28 @@ class SessionStoreTests(unittest.TestCase):
                 },
             )
 
+    def test_lean_mode_persists_tool_result_encoding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="lean")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "user",
+                "",
+                kind="tool_result",
+                metadata={
+                    "agent": "reader",
+                    "tool_name": "cat",
+                    "summary": "Read cp950 file.",
+                    "encoding_used": "cp950",
+                },
+            )
+
+            payload = json.loads((store.sessions_dir / session.id / "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+            self.assertEqual(payload["encoding"], "cp950")
+
     def test_debug_mode_keeps_full_trace_fields(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SessionStore(Path(tmpdir) / "sessions", trace_mode="debug")
@@ -157,6 +181,29 @@ class SessionStoreTests(unittest.TestCase):
             messages = store.load_messages(session.id)
 
             self.assertIn("raw_content", messages[0].metadata)
+
+    def test_append_message_sanitizes_control_tokens_before_logging(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            store = SessionStore(Path(tmpdir) / "sessions", trace_mode="debug")
+            session = store.create_session(backend="anthropic", model="demo-model")
+
+            store.append_message(
+                session.id,
+                "assistant",
+                '<|tool_response|>Flow trace for human review:\n\nTarget: prompt',
+                metadata={
+                    "assistant_text": '<|tool_call|>call:unknown_tool{value:"x"}<|tool_response|>clean text',
+                    "raw_content": [{"type": "text", "text": '<|tool_response|>clean text'}],
+                },
+            )
+
+            messages = store.load_messages(session.id)
+            payload = json.loads((store.sessions_dir / session.id / "messages.jsonl").read_text(encoding="utf-8").splitlines()[0])
+
+            self.assertEqual(messages[0].content, "Flow trace for human review:\n\nTarget: prompt")
+            self.assertEqual(messages[0].metadata["assistant_text"], "clean text")
+            self.assertNotIn("<|tool_response|>", json.dumps(payload, ensure_ascii=False))
+            self.assertNotIn("call:unknown_tool", json.dumps(payload, ensure_ascii=False))
 
     def test_list_sessions_sorts_by_updated_at_descending(self):
         with tempfile.TemporaryDirectory() as tmpdir:

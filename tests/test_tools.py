@@ -39,7 +39,7 @@ class ToolTests(unittest.TestCase):
 
         result = tool.run({"path": "notes.txt", "offset": 1, "limit": 1})
 
-        self.assertIn('<file path="notes.txt" offset="1" limit="1">', result)
+        self.assertIn('<file path="notes.txt" offset="1" limit="1" encoding="utf-8">', result)
         self.assertIn("     2|line2", result)
         self.assertIn("Use offset >= 2 to continue.", result)
 
@@ -55,10 +55,21 @@ class ToolTests(unittest.TestCase):
 
         result = tool.run({"path": "notes.txt", "full": True})
 
-        self.assertIn('<file path="notes.txt" offset="0" limit="3">', result)
+        self.assertIn('<file path="notes.txt" offset="0" limit="3" encoding="utf-8">', result)
         self.assertIn("     1|line1", result)
         self.assertIn("     3|line3", result)
         self.assertNotIn("File has more lines.", result)
+
+    def test_cat_uses_encoding_fallback_for_cp950_files(self):
+        tool = CatTool(self.workspace)
+        text = "第一行\n第二行\n"
+        (self.workspace / "cp950_notes.txt").write_bytes(text.encode("cp950"))
+
+        result = tool.run({"path": "cp950_notes.txt", "full": True})
+
+        self.assertIn('encoding="cp950"', result)
+        self.assertIn("第一行", result)
+        self.assertIn("第二行", result)
 
     def test_ls_lists_files_and_directories(self):
         tool = LsTool(self.workspace)

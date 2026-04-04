@@ -40,6 +40,9 @@ class Message:
             agent = self.metadata.get("agent")
             if agent:
                 payload["agent"] = agent
+            encoding_used = self.metadata.get("encoding")
+            if encoding_used:
+                payload["encoding"] = encoding_used
             if self.metadata.get("error"):
                 payload["error"] = True
             if "duration_ms" in self.metadata:
@@ -72,6 +75,7 @@ class Message:
                 "summary": payload.get("summary", ""),
                 "args": dict(payload.get("args", {}) or {}),
                 "agent": payload.get("agent", ""),
+                "encoding": payload.get("encoding", ""),
                 "error": payload.get("error", False),
                 "__flat__": True,
             }

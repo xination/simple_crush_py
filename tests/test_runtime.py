@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from crush_py.agent.runtime import AgentRuntime
-from crush_py.backends.base import AssistantTurn, BaseBackend, ToolCall
+from crush_py.backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from crush_py.config import AppConfig, BackendConfig
 from crush_py.repl import _format_history, _format_trace
 from crush_py.store.session_store import SessionStore
@@ -272,7 +272,7 @@ class FakeFlowTraceDirectBackend(BaseBackend):
             self.reader_messages = list(messages)
             return AssistantTurn(
                 text=(
-                    "Flow trace for human review:\n\n"
+                    "<|tool_response|>Flow trace for human review:\n\n"
                     "Target: prompt\n"
                     "Confirmed file: crush_py/agent/runtime.py\n"
                     "Coverage: local\n\n"
@@ -347,6 +347,26 @@ class FakePlannerReaderBackend(BaseBackend):
 
     def supports_tool_calls(self):
         return True
+
+
+class FakeRetryBackend(BaseBackend):
+    def __init__(self):
+        self.turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        if self.turn_count == 1:
+            raise BackendError("temporary timeout")
+        return AssistantTurn(text='<|tool_response|>Confirmed path: README.md\nSummary: ok')
+
+    def supports_tool_calls(self):
+        return False
 
 
 class FakeReaderThreeCallBackend(BaseBackend):
@@ -1122,7 +1142,11 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertEqual(backend.planner_turn_count, 0)
             self.assertIn("Variable trace for human review:", result)
-            self.assertIn("Coverage: local (reviewed `create_session` block only)", result)
+            self.assertIn("Trace status: partial", result)
+            self.assertIn("Confidence: local-only", result)
+            self.assertIn("Coverage:", result)
+            self.assertIn("- scope: local (reviewed `create_session` block only)", result)
+            self.assertIn("- selection: grep-confirmed local windows", result)
             self.assertIsNotNone(backend.reader_messages)
             prompt_text = backend.reader_messages[0]["content"]
             self.assertIn("Variable: session_id", prompt_text)
@@ -1137,12 +1161,14 @@ class AgentRuntimeTests(unittest.TestCase):
             cat_payloads = [payload for payload in payloads if payload["tool_name"] == "cat"]
             self.assertTrue(cat_payloads)
             self.assertTrue(all(not payload["tool_use_id"].startswith("reader-cat-full:") for payload in cat_payloads))
-            self.assertIn("Passed as an argument at line 12 inside `create_session`", result)
+            self.assertIn("3. Passed to line 12 inside `create_session`", result)
             self.assertIn("Evidence: `return _session_dir(session_id)`", result)
-            self.assertIn("Stored into field at line 10 inside `create_session`", result)
+            self.assertIn("4. Used in", result)
+            self.assertIn("Role: Stored into field at line 10 inside `create_session`", result)
             self.assertIn("No confirmed reassignment in the reviewed block.", result)
-            self.assertIn("Confirmed local flow", result)
-            self.assertEqual(result.count("Unresolved uncertainty:"), 1)
+            self.assertIn("5. Unknown / not proven", result)
+            self.assertNotIn("<|tool_response|>", result)
+            self.assertEqual(result.count("Unknown / not proven"), 1)
             self.assertNotIn("No direct role site retained from reviewed windows", result)
             self.assertNotIn("- None", result)
 
@@ -1188,6 +1214,8 @@ class AgentRuntimeTests(unittest.TestCase):
             reader_result = next(message for message in messages if message.kind == "tool_result" and message.metadata.get("tool") == "reader")
             self.assertEqual(reader_result.metadata["args"]["mode"], "flow_trace")
             self.assertEqual(reader_result.metadata["args"]["coverage"], "local")
+            self.assertEqual(reader_result.metadata["args"]["trace_status"], "partial")
+            self.assertEqual(reader_result.metadata["args"]["confidence"], "local-only")
 
     def test_flow_trace_uses_qualname_and_separates_persistence_from_handoff(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1251,12 +1279,16 @@ class AgentRuntimeTests(unittest.TestCase):
                 payloads,
             )
 
-            self.assertIn("Coverage: local (reviewed `AgentRuntime.ask` block only)", result)
+            self.assertIn("Trace status: partial", result)
+            self.assertIn("Confidence: local-only", result)
+            self.assertIn("Coverage:", result)
+            self.assertIn("- scope: local (reviewed `AgentRuntime.ask` block only)", result)
+            self.assertIn("- selection: containing symbol blocks", result)
             self.assertIn("Reviewed symbol: AgentRuntime.ask", result)
-            self.assertIn("2. Confirmed local transformation at line 4 inside `AgentRuntime.ask`", result)
-            self.assertIn("3. Confirmed storage or persistence at line 6 inside `AgentRuntime.ask`", result)
-            self.assertIn("4. Confirmed downstream handoff at line 7 inside `AgentRuntime.ask`", result)
-            self.assertIn("A storage or persistence call using `prompt` is confirmed in the reviewed block.", result)
+            self.assertIn("2. Immediate transform at line 4 inside `AgentRuntime.ask`", result)
+            self.assertIn("3. Stored or logged at line 6 inside `AgentRuntime.ask`", result)
+            self.assertIn("4. Hand-off at line 7 inside `AgentRuntime.ask`", result)
+            self.assertIn("5. Unknown / not proven", result)
             self.assertNotIn("Storage or state updates", result)
 
     def test_trace_prompt_does_not_use_direct_summary_fast_path(self):
@@ -1348,6 +1380,22 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertIn("Confirmed path: README.md", result)
             self.assertEqual([message.kind for message in messages], ["message", "message"])
+
+    def test_plain_backend_retries_and_sanitizes_final_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRetryBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("Summarize README.md")
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(backend.turn_count, 2)
+            self.assertEqual(result, "Confirmed path: README.md\nSummary: ok")
+            self.assertEqual(messages[-1].content, "Confirmed path: README.md\nSummary: ok")
 
     def test_format_history_reads_recent_conversation_messages(self):
         with tempfile.TemporaryDirectory() as tmpdir:

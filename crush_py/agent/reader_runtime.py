@@ -1,6 +1,7 @@
 from typing import Any, Dict, List, Optional
 
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
+from ..output_sanitize import sanitize_text
 from ..tools.base import ToolError
 from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
 
@@ -37,12 +38,13 @@ class ReaderRuntimeMixin:
         tool_calls_used = 0
         for _ in range(MAX_READER_ROUNDS):
             remaining_tool_calls = max(0, MAX_READER_TOOL_CALLS - tool_calls_used)
-            turn = backend.generate_turn(
+            turn = self._generate_turn_with_retry(
+                backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
                 conversation,
                 tools=self.tools.specs(READER_TOOL_NAMES) if remaining_tool_calls > 0 else None,
             )
-            final_text = turn.text.strip()
+            final_text = sanitize_text(turn.text).strip()
             if not turn.tool_calls:
                 state = self._state_for_session(session_id)
                 state.file_summaries[rel_path] = _single_line(final_text, 240)
@@ -96,6 +98,7 @@ class ReaderRuntimeMixin:
                     result = self.run_tool(tool_call.name, arguments)
                 except ToolError as exc:
                     result = "Tool error: {0}".format(exc)
+                result = sanitize_text(result)
                 summary = self._summarize_tool_result(session_id, tool_call.name, arguments, result)
                 backend_tool_result = {
                     "type": "tool_result",
@@ -115,6 +118,7 @@ class ReaderRuntimeMixin:
                         "tool_arguments": arguments,
                         "tool_use_id": tool_call.id,
                         "summary": summary,
+                        "encoding_used": self._tool_result_encoding(tool_call.name, result),
                     },
                 )
             conversation.append({"role": "user", "content": tool_results})
@@ -139,6 +143,7 @@ class ReaderRuntimeMixin:
             },
         )
         result = self.run_tool(tool_name, arguments)
+        result = sanitize_text(result)
         summary = self._summarize_tool_result(session_id, tool_name, arguments, result)
         self.session_store.append_message(
             session_id,
@@ -151,6 +156,7 @@ class ReaderRuntimeMixin:
                 "tool_arguments": dict(arguments),
                 "tool_use_id": tool_use_id,
                 "summary": summary,
+                "encoding_used": self._tool_result_encoding(tool_name, result),
             },
         )
         return result

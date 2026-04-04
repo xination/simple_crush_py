@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..agent.messages import Message
+from ..output_sanitize import sanitize_content, sanitize_text
 
 
 def utc_now_iso() -> str:
@@ -66,10 +67,12 @@ class SessionStore:
         kind: str = "message",
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Message:
-        sanitized_metadata = self._sanitize_metadata(kind, metadata or {})
+        safe_content = sanitize_content(content)
+        safe_metadata = sanitize_content(metadata or {})
+        sanitized_metadata = self._sanitize_metadata(kind, safe_metadata)
         message = Message(
             role=role,
-            content=content,
+            content=safe_content,
             created_at=utc_now_iso(),
             kind=kind,
             metadata=sanitized_metadata,
@@ -115,16 +118,19 @@ class SessionStore:
                 "tool": tool_name,
                 "args": _first_tool_args(metadata),
                 "agent": metadata.get("agent", ""),
-                "text": metadata.get("assistant_text", "") or _assistant_text_from_raw_content(metadata.get("raw_content", [])),
+                "text": sanitize_text(
+                    metadata.get("assistant_text", "") or _assistant_text_from_raw_content(metadata.get("raw_content", []))
+                ),
                 "__flat__": True,
             }
             return {key: value for key, value in lean.items() if value not in ("", {}, None)}
         if kind == "tool_result":
             lean = {
                 "tool": metadata.get("tool_name", ""),
-                "summary": metadata.get("summary", ""),
+                "summary": sanitize_text(metadata.get("summary", "")),
                 "args": dict(metadata.get("tool_arguments", {}) or {}),
                 "agent": metadata.get("agent", ""),
+                "encoding": metadata.get("encoding_used", ""),
                 "__flat__": True,
             }
             if metadata.get("error"):

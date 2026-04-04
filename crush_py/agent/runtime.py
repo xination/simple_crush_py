@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from ..backends.openai_compat import OpenAICompatBackend
 from ..config import AppConfig, BackendConfig
+from ..output_sanitize import sanitize_content, sanitize_text
 from ..store.session_store import SessionMeta, SessionStore
 from ..tools.base import ToolError
 from ..tools.registry import ToolRegistry
@@ -22,6 +23,7 @@ MAX_TOOL_ROUNDS = 6
 MAX_TOOL_CALLS_PER_ROUND = 2
 MAX_RECENT_MESSAGES = 4
 MAX_INLINE_CAT_RESULT_CHARS = 6000
+MAX_BACKEND_RETRIES = 1
 LOCATOR_TOOL_NAMES = ("ls", "tree", "find", "grep")
 READ_TOOL_NAMES = LOCATOR_TOOL_NAMES + ("cat",)
 
@@ -73,7 +75,7 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
         backend = self._create_backend(backend_cfg)
         state = self._state_for_session(session.id)
         if not state.entry_point:
-            state.entry_point = prompt.strip()
+            state.entry_point = sanitize_text(prompt).strip()
 
         self.session_store.append_message(session.id, "user", prompt)
         messages = self._messages_for_backend(session.id)
@@ -88,7 +90,7 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
                 chunks.append(chunk)
                 print(chunk, end="", flush=True)
             print("")
-            text = "".join(chunks).strip()
+            text = sanitize_text("".join(chunks)).strip()
             self.session_store.append_message(
                 session.id,
                 "assistant",
@@ -96,13 +98,13 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
                 metadata={"raw_content": [{"type": "text", "text": text}]},
             )
         else:
-            turn = backend.generate_with_metadata(system_prompt, messages)
-            text = turn.text.strip()
+            turn = self._generate_turn_with_retry(backend, system_prompt, messages)
+            text = sanitize_text(turn.text).strip()
             self.session_store.append_message(
                 session.id,
                 "assistant",
                 text,
-                metadata={"raw_content": turn.raw_content},
+                metadata={"raw_content": sanitize_content(turn.raw_content)},
             )
 
         self.active_session = self.session_store.load_session(session.id)
@@ -211,9 +213,9 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
 
         for _ in range(MAX_TOOL_ROUNDS):
             current_tools = self.tools.specs(LOCATOR_TOOL_NAMES)
-            turn = backend.generate_turn(system_prompt, conversation, tools=current_tools)
-            final_text = turn.text.strip()
-            final_raw_content = turn.raw_content or self._assistant_text_blocks(turn)
+            turn = self._generate_turn_with_retry(backend, system_prompt, conversation, tools=current_tools)
+            final_text = sanitize_text(turn.text).strip()
+            final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
             if not turn.tool_calls:
                 self.session_store.append_message(
                     session_id,
@@ -254,6 +256,7 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
                     result = self.run_tool(tool_call.name, arguments)
                 except ToolError as exc:
                     result = "Tool error: {0}".format(exc)
+                result = sanitize_text(result)
 
                 tool_result_block = {
                     "type": "tool_result",
@@ -277,6 +280,7 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
                         "tool_arguments": arguments,
                         "tool_use_id": tool_call.id,
                         "summary": summary,
+                        "encoding_used": self._tool_result_encoding(tool_call.name, result),
                     },
                 )
 
@@ -417,6 +421,15 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
             return result
         return summary
 
+    def _tool_result_encoding(self, tool_name: str, result: str) -> str:
+        if tool_name != "cat":
+            return ""
+        first_line = result.splitlines()[0] if result.splitlines() else ""
+        match = re.search(r'encoding="([^"]+)"', first_line)
+        if not match:
+            return ""
+        return match.group(1)
+
     def _stored_tool_use_content(self, message: Any) -> Any:
         tool_calls = message.metadata.get("tool_calls", [])
         if not tool_calls:
@@ -479,10 +492,10 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
     def _assistant_text_blocks(self, turn: AssistantTurn) -> List[Dict[str, str]]:
         if not turn.text:
             return []
-        return [{"type": "text", "text": turn.text}]
+        return [{"type": "text", "text": sanitize_text(turn.text)}]
 
     def _assistant_content_for_tool_turn(self, turn: AssistantTurn) -> List[Dict[str, Any]]:
-        raw_content = turn.raw_content or self._assistant_text_blocks(turn)
+        raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
         if not turn.tool_calls:
             return raw_content
         return [item for item in raw_content if item.get("type") != "text"]
@@ -490,7 +503,78 @@ class AgentRuntime(SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
     def _squashed_assistant_text(self, turn: AssistantTurn) -> str:
         if turn.tool_calls:
             return ""
-        return turn.text.strip()
+        return sanitize_text(turn.text).strip()
+
+    def _generate_turn_with_retry(
+        self,
+        backend: BaseBackend,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[dict]] = None,
+    ) -> AssistantTurn:
+        errors: List[str] = []
+        attempts = [messages]
+        fallback_messages = self._fallback_messages_for_retry(messages)
+        if fallback_messages != messages:
+            attempts.append(fallback_messages)
+        for retry_index in range(MAX_BACKEND_RETRIES + 1):
+            for candidate_messages in attempts:
+                try:
+                    turn = backend.generate_turn(system_prompt, candidate_messages, tools=tools)
+                    return AssistantTurn(
+                        text=sanitize_text(turn.text),
+                        tool_calls=turn.tool_calls,
+                        raw_content=sanitize_content(turn.raw_content),
+                    )
+                except BackendError as exc:
+                    errors.append(str(exc))
+            if retry_index >= MAX_BACKEND_RETRIES:
+                break
+        raise BackendError("Backend turn failed after retry/fallback: {0}".format(" | ".join(errors)))
+
+    def _fallback_messages_for_retry(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        fallback: List[Dict[str, Any]] = []
+        changed = False
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content")
+            if isinstance(content, list):
+                compact_blocks = []
+                for item in content:
+                    compact_item = dict(item)
+                    if compact_item.get("type") == "tool_result":
+                        compact_content = self._compact_retry_tool_result(
+                            compact_item.get("tool_name", ""),
+                            compact_item.get("content", ""),
+                        )
+                        if compact_content != compact_item.get("content", ""):
+                            changed = True
+                        compact_item["content"] = compact_content
+                    compact_blocks.append(compact_item)
+                fallback.append({"role": role, "content": compact_blocks})
+                continue
+            if isinstance(content, str):
+                compact_text = self._compact_retry_text(content)
+                if compact_text != content:
+                    changed = True
+                fallback.append({"role": role, "content": compact_text})
+                continue
+            fallback.append(message)
+        return fallback if changed else messages
+
+    def _compact_retry_tool_result(self, tool_name: str, content: str) -> str:
+        text = sanitize_text(content)
+        if tool_name == "cat":
+            return self._compact_retry_text(text, limit=800)
+        if tool_name == "grep":
+            return self._compact_retry_text(text, limit=600)
+        return self._compact_retry_text(text, limit=400)
+
+    def _compact_retry_text(self, text: str, limit: int = 800) -> str:
+        normalized = sanitize_text(text)
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit].rstrip() + "\n...[retry fallback compacted]"
 
     def _system_prompt_for_prompt(self, prompt: str) -> str:
         lowered = prompt.lower()
