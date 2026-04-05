@@ -75,12 +75,6 @@ class CliTests(unittest.TestCase):
     def test_build_summary_prompt_defaults_to_brief_mode(self):
         self.assertEqual(build_summary_prompt("README.md"), "Give a short summary for README.md")
 
-    def test_build_summary_prompt_for_brief_mode(self):
-        self.assertEqual(
-            build_summary_prompt("README.md", brief=True),
-            "Give a short summary for README.md",
-        )
-
     def test_build_trace_prompt_adds_trace_prefix(self):
         self.assertEqual(
             build_trace_prompt("how prompt flows inside crush_py/agent/runtime.py"),
@@ -126,12 +120,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("Guide mode:", prompt_from_args(args))
         self.assertIn("turn README.md into a checklist", prompt_from_args(args))
 
-    def test_prompt_from_args_builds_detail_summary_prompt(self):
-        parser = build_parser()
-        args = parser.parse_args(["--summarize-detail", "README.md"])
-
-        self.assertEqual(prompt_from_args(args), "Summarize README.md")
-
     def test_parser_rejects_multiple_prompt_modes(self):
         parser = build_parser()
 
@@ -150,40 +138,6 @@ class CliTests(unittest.TestCase):
         self.assertIn("--summarize PATH", help_text)
         self.assertIn("--trace REQUEST", help_text)
         self.assertIn("--guide QUESTION", help_text)
-
-    def test_main_uses_summarize_detail_prompt(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace = Path(tmpdir)
-            config_path = workspace / "config.json"
-            config_path.write_text(
-                (
-                    '{\n'
-                    '  "workspace_root": ".",\n'
-                    '  "sessions_dir": ".crush_py/sessions",\n'
-                    '  "default_backend": "lm_studio",\n'
-                    '  "trace_mode": "lean",\n'
-                    '  "backends": {\n'
-                    '    "lm_studio": {\n'
-                    '      "type": "openai_compat",\n'
-                    '      "model": "demo",\n'
-                    '      "base_url": "http://example.test/v1",\n'
-                    '      "api_key": "not-needed"\n'
-                    "    }\n"
-                    "  }\n"
-                    "}\n"
-                ),
-                encoding="utf-8",
-            )
-            fake_runtime = FakeRuntime()
-
-            with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
-                with patch("builtins.print") as print_mock:
-                    exit_code = main(["--config", str(config_path), "--summarize-detail", "README.md"])
-
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(fake_runtime.prompts, ["Summarize README.md"])
-            self.assertEqual(fake_runtime.streams, [False])
-            print_mock.assert_called_once_with("ok")
 
     def test_main_uses_trace_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -6,11 +6,13 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from crush_py.agent.runtime import AgentRuntime
+from crush_py.agent.intent_router import IntentDecision
 from crush_py.backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from crush_py.config import AppConfig, BackendConfig
 from crush_py.repl import _format_history, _format_trace
 from crush_py.repl_commands import try_handle_command
 from crush_py.store.session_store import SessionStore
+from crush_py.tools.cat import CatTool
 
 
 class FakeCatLoopBackend(BaseBackend):
@@ -388,6 +390,79 @@ class FakeInlineGrepResultBackend(BaseBackend):
         return True
 
 
+class FakeRouterDocQaBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.planner_turn_count = 0
+        self.router_call_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return json.dumps(
+                {
+                    "intent": "direct_file_doc_qa",
+                    "confidence": "high",
+                    "target_path": "README.md",
+                    "needs_full_cat": True,
+                }
+            )
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_messages = list(messages)
+            return AssistantTurn(text="According to `README.md`, crush_py is built for read-focused repository exploration.")
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeRouterInvalidJsonBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.router_call_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return "not-json"
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_messages = list(messages)
+            return AssistantTurn(text="According to `README.md`, fallback reader answer.")
+        return AssistantTurn(text="Fallback planner answer.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class CaptureModelBackend(BaseBackend):
+    last_model = None
+
+    def __init__(self, model, api_key, base_url, timeout=60, max_tokens=4096):
+        CaptureModelBackend.last_model = model
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "ok"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        return AssistantTurn(text="ok")
+
+
 class FakeVariableTraceDirectBackend(BaseBackend):
     def __init__(self):
         self.reader_messages = None
@@ -464,6 +539,35 @@ class FakeFlowTraceDirectBackend(BaseBackend):
                     "   Evidence: `ask(prompt)` -> `prompt.strip()` -> `state.entry_point`\n\n"
                     "Unresolved uncertainty:\n"
                     "- The trace is limited to the reviewed local blocks."
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeFileFlowTraceDirectBackend(BaseBackend):
+    def __init__(self):
+        self.reader_messages = None
+        self.reader_system_prompt = None
+        self.planner_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_system_prompt = system_prompt
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "The user wants to complete the flow trace for `crush_py/repl_display.py`. "
+                    "The summary ends abruptly and I should inspect more context."
                 )
             )
         self.planner_turn_count += 1
@@ -618,6 +722,36 @@ class FakeReaderToolSelectionBackend(BaseBackend):
             self.reader_tools_seen.append([tool["name"] for tool in (tools or [])])
             return AssistantTurn(text="Confirmed path: README.md\nSummary: doc file\nEvidence: README\nUnresolved uncertainty: none")
         return AssistantTurn(text="Confirmed path: README.md\nUnconfirmed branches: none\nNext step: none")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeReaderSufficientDirectAnswerBackend(BaseBackend):
+    def __init__(self):
+        self.planner_turn_count = 0
+        self.reader_messages = None
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "According to `README.md`, `crush_py` is a read-focused repository helper for small local models.\n\n"
+                    "Confirmed path: `README.md`\n"
+                    "Summary:\n"
+                    "- It is built for read-only repo exploration.\n"
+                    "- It helps trace code flow and summarize docs."
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
 
     def supports_tool_calls(self):
         return True
@@ -1535,7 +1669,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 result,
             )
 
-    def test_review_draft_mode_keeps_evidence_lines(self):
+    def test_direct_file_summary_also_omits_review_draft_scaffolding_for_non_brief_wording(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "crush_py" / "store"
@@ -1548,9 +1682,11 @@ class AgentRuntimeTests(unittest.TestCase):
 
             result = runtime.ask("Explain what crush_py/store/session_store.py is responsible for.")
 
-            self.assertIn("Evidence:", result)
-            self.assertIn("Tag: likely_helper", result)
-            self.assertIn("Review note:", result)
+            self.assertIn("1.", result)
+            self.assertNotIn("Candidate responsibilities for human review:", result)
+            self.assertNotIn("Evidence:", result)
+            self.assertNotIn("Tag:", result)
+            self.assertNotIn("Review note:", result)
 
     def test_compact_reader_cat_content_trims_large_payloads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1597,6 +1733,29 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertTrue(result.startswith("Preliminary summary (partial file coverage).\n1. "))
             self.assertNotIn("Evidence:", result)
 
+    def test_key_ideas_prompt_uses_brief_summary_shape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\none\ntwo\nthree\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakePromptDirectCatBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+            runtime._intent_decision = lambda prompt, backend=None: IntentDecision(
+                intent="direct_file_summary",
+                confidence="high",
+                target_path="README.md",
+                needs_full_cat=True,
+                source="test",
+            )
+
+            result = runtime.ask("read README.md and then show me the key ideas")
+
+            self.assertIn("1.", result)
+            self.assertNotIn("Candidate responsibilities for human review:", result)
+            self.assertNotIn("Evidence:", result)
+            self.assertNotIn("Tag:", result)
+
     def test_detects_direct_file_variable_trace_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -1627,6 +1786,18 @@ class AgentRuntimeTests(unittest.TestCase):
                     "Trace how session_id flows inside crush_py/store/session_store.py"
                 )
             )
+
+    def test_detects_direct_file_file_flow_trace_prompt(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py"
+            target.mkdir(parents=True)
+            (target / "repl_display.py").write_text("def format_trace(runtime):\n    return 'ok'\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            self.assertTrue(runtime._is_direct_file_file_flow_trace_prompt("Trace the flow for crush_py/repl_display.py"))
+            self.assertFalse(runtime._is_direct_file_summary_prompt("Trace the flow for crush_py/repl_display.py"))
 
     def test_direct_file_variable_trace_uses_outline_grep_and_local_cat_reads(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1814,6 +1985,48 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIn("5. Unknown / not proven", result)
             self.assertNotIn("Storage or state updates", result)
 
+    def test_direct_file_file_flow_trace_uses_reader_and_fallback_output(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py"
+            target.mkdir(parents=True)
+            (target / "repl_display.py").write_text(
+                "\n".join(
+                    [
+                        "def format_trace(runtime, limit=20):",
+                        "    messages = []",
+                        "    return '\\n'.join(format_trace_message(message) for message in messages)",
+                        "",
+                        "def format_trace_message(message):",
+                        "    return message.kind",
+                        "",
+                        "def format_history(runtime, limit=20):",
+                        "    return '\\n'.join(format_history_message(message) for message in [])",
+                        "",
+                        "def format_history_message(message):",
+                        "    return message.role",
+                        "",
+                        "def _single_line(text):",
+                        "    return text.strip()",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeFileFlowTraceDirectBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("Trace the flow for crush_py/repl_display.py")
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("File flow for human review:", result)
+            self.assertIn("`format_trace`", result)
+            self.assertIn("`format_trace_message`", result)
+            self.assertIn("`return '\\n'.join(format_trace_message(message) for message in messages)`", result)
+            self.assertNotIn("The user wants to complete the flow trace", result)
+
     def test_trace_prompt_does_not_use_direct_summary_fast_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -1983,6 +2196,69 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIn("/ls . 2", planner_rendered)
             self.assertIn("Directory overview gathered for `.`.", planner_rendered)
 
+    def test_duplicate_tool_result_is_deduped_in_session_store(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            session = store.create_session(backend="test", model="fake")
+
+            store.append_message(
+                session.id,
+                "user",
+                "first result",
+                kind="tool_result",
+                metadata={"tool": "cat", "args": {"path": "README.md"}, "summary": "Read README", "agent": "reader"},
+            )
+            store.append_message(
+                session.id,
+                "user",
+                "first result",
+                kind="tool_result",
+                metadata={"tool": "cat", "args": {"path": "README.md"}, "summary": "Read README", "agent": "reader"},
+            )
+
+            messages = store.load_messages(session.id)
+
+            self.assertEqual(len(messages), 1)
+            self.assertEqual(messages[0].metadata["tool"], "cat")
+
+    def test_direct_file_question_reuses_reader_answer_without_planner_rewrite(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\n說明\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeReaderSufficientDirectAnswerBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("according to README.md, what is crush_py built for?")
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("According to `README.md`", result)
+            self.assertIn("read-only repo exploration", result)
+            self.assertIsNotNone(backend.reader_messages)
+            self.assertTrue(any(isinstance(message.get("content"), list) for message in backend.reader_messages))
+
+    def test_cat_and_summary_preserve_utf8_chinese_readme_text(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text(
+                "# crush_py\n\n一個專門給小型本地模型使用的 read-focused repository helper。\n",
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            session = runtime.new_session()
+
+            result = CatTool(workspace).run({"path": "README.md"})
+            summary = runtime._summarize_tool_result(session.id, "cat", {"path": "README.md"}, result)
+
+            self.assertIn("一個專門給小型本地模型使用", result)
+            self.assertIn("一個專門給小型本地模型使用", summary)
+            self.assertNotIn("銝", summary)
+
     def test_reader_can_use_up_to_three_tool_calls_before_forced_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -2120,6 +2396,61 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertEqual(summary_a, summary_b)
             self.assertIn("notes.txt", runtime._state_for_session(session.id).file_summaries)
+
+    def test_tiny_intent_router_routes_direct_file_doc_qa(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nread-focused repository helper\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRouterDocQaBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("from README.md, can you show me what crush_py is?")
+
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("According to `README.md`", result)
+            self.assertIsNotNone(backend.reader_messages)
+            self.assertTrue(any(isinstance(message.get("content"), list) for message in backend.reader_messages))
+
+    def test_tiny_intent_router_falls_back_when_json_is_invalid(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nread-focused repository helper\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeRouterInvalidJsonBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("according to README.md, what is crush_py built for?")
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("fallback reader answer.", result)
+
+    def test_session_model_override_is_used_for_backend_creation(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            runtime.new_session()
+            runtime.set_session_model("google/gemma-3-4b")
+
+            original_backend = runtime._create_backend
+            try:
+                runtime._create_backend = lambda backend_cfg: CaptureModelBackend(
+                    model=backend_cfg.model,
+                    api_key=backend_cfg.api_key,
+                    base_url=backend_cfg.base_url,
+                    timeout=backend_cfg.timeout,
+                    max_tokens=backend_cfg.max_tokens,
+                )
+                runtime.ask("Summarize README.md")
+            finally:
+                runtime._create_backend = original_backend
+
+            self.assertEqual(CaptureModelBackend.last_model, "google/gemma-3-4b")
 
 
 if __name__ == "__main__":

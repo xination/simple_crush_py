@@ -47,16 +47,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--summarize",
         help="Summarize one file in a short 3-point overview. Use this when you want the file's main responsibilities, not a code trace.",
     )
-    prompt_group.add_argument("--summarize-detail", help="Summarize one file with detailed review-draft output and exit")
     parser.add_argument("--stream", action="store_true", help="Stream backend output")
     return parser
 
 
-def build_summary_prompt(path: str, brief: bool = True) -> str:
+def build_summary_prompt(path: str) -> str:
     normalized = path.strip()
-    if brief:
-        return "Give a short summary for {0}".format(normalized)
-    return "Summarize {0}".format(normalized)
+    return "Give a short summary for {0}".format(normalized)
 
 
 def build_trace_prompt(request: str) -> str:
@@ -88,10 +85,8 @@ def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
         return build_trace_prompt(args.trace)
     if args.guide:
         return build_guide_prompt(args.guide)
-    if args.summarize_detail:
-        return build_summary_prompt(args.summarize_detail, brief=False)
     if args.summarize:
-        return build_summary_prompt(args.summarize, brief=True)
+        return build_summary_prompt(args.summarize)
     return None
 
 

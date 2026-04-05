@@ -105,7 +105,6 @@ python -m crush_py
 
 ```bash
 python -m crush_py --summarize README.md
-python -m crush_py --summarize-detail README.md
 python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
 python -m crush_py --guide "turn README.md into a checklist"
 ```
@@ -122,15 +121,7 @@ python -m crush_py --summarize README.md
 - 目標是說明「這個檔案主要負責什麼」
 - direct-file summary 會優先走 `cat`
 - 只有使用者明確在問 structure / class / method / architecture 時，才會偏向 `get_outline`
-
-### `--summarize-detail`
-
-```bash
-python -m crush_py --summarize-detail README.md
-```
-
-- 回傳 review-draft 風格的詳細摘要
-- 會帶 `Evidence:`、`Tag:` 等欄位
+- 目前摘要模式統一為短版 3 點摘要
 
 ### partial coverage 行為
 
@@ -280,10 +271,13 @@ python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
 python -m crush_py --guide "turn README.md into a checklist"
 ```
 
+- 更完整的手動 smoke suite 在 [smoke_tests/README.md](smoke_tests/README.md)
+
 ## 📎 相關文件
 
 - [task12.md](task12.md)
 - [wishList.md](wishList.md)
+- [smoke_tests/README.md](smoke_tests/README.md)
 - [session_2026-04-04_learnings.md](session_2026-04-04_learnings.md)
 - [archieve/plan.md](archieve/plan.md)
 - [archieve/NEXT.md](archieve/NEXT.md)

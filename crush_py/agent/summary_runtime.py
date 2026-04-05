@@ -16,8 +16,7 @@ class SummaryRuntimeMixin:
         cat_payloads, coverage = self._collect_summary_file_reads(session_id, rel_path)
         cat_payloads = self._compact_reader_cat_payloads(cat_payloads)
         coverage_line = "Coverage: {0}".format(coverage)
-        brief_summary_mode = self._is_brief_summary_prompt(prompt)
-        request_instructions = self._direct_file_summary_reader_instructions(brief_summary_mode)
+        request_instructions = self._direct_file_summary_reader_instructions()
         conversation = [
             {
                 "role": "user",
@@ -36,6 +35,7 @@ class SummaryRuntimeMixin:
             conversation,
             stream=stream,
         )
+        final_text = self._format_brief_direct_file_summary(final_text)
         if coverage != "complete" and "Preliminary summary" not in final_text:
             final_text = "Preliminary summary (partial file coverage).\n" + final_text
 
@@ -118,8 +118,7 @@ class SummaryRuntimeMixin:
         if not self._is_direct_file_summary_prompt(prompt):
             return text
         processed = text
-        if self._is_brief_summary_prompt(prompt):
-            processed = self._format_brief_direct_file_summary(processed)
+        processed = self._format_brief_direct_file_summary(processed)
         rel_path = self._prompt_direct_file_path(prompt)
         if not rel_path or not self._has_partial_reader_summary_for_path(session_id, rel_path):
             return processed
@@ -131,31 +130,17 @@ class SummaryRuntimeMixin:
         return self._prompt_intent(prompt).direct_file_summary
 
     def _is_brief_summary_prompt(self, prompt: str) -> bool:
-        return self._prompt_intent(prompt).brief_summary
+        return self._is_direct_file_summary_prompt(prompt)
 
-    def _direct_file_summary_reader_instructions(self, brief_summary_mode: bool) -> str:
-        if brief_summary_mode:
-            return (
-                "Read only this file and give a brief summary.\n"
-                "Return exactly 3 numbered points.\n"
-                "Each point should be one sentence about a real file responsibility.\n"
-                "No Evidence, Tag, Review note, Suggested keep, or Suggested review/remove sections.\n"
-                "No intro or outro.\n"
-                "If coverage is partial, start with `Preliminary summary (partial file coverage).`"
-            )
+    def _direct_file_summary_reader_instructions(self) -> str:
         return (
-            "Read only this file and produce a human-review draft.\n"
-            "Return 4 to 6 candidate responsibilities.\n"
-            "Each candidate needs an `Evidence:` line and a `Tag:` line.\n"
-            "Use one tag: likely_core, likely_supporting, or likely_helper.\n"
-            "Then add `Review note:`, `Suggested keep:`, and `Suggested review/remove:`.\n"
-            "Do not claim these are final truth.\n"
-            "If coverage is partial, start with `Preliminary summary (partial file coverage).`\n"
-            "Format:\n"
-            "Candidate responsibilities for human review:\n"
-            "1. <candidate>\n"
-            "   Evidence: <names or patterns>\n"
-            "   Tag: likely_core / likely_supporting / likely_helper"
+            "Read only this file and give a brief summary.\n"
+            "Return exactly 3 numbered points.\n"
+            "Each point should be one sentence about a real file responsibility or key idea.\n"
+            "No Candidate responsibilities for human review heading.\n"
+            "No Evidence, Tag, Review note, Suggested keep, or Suggested review/remove sections.\n"
+            "No intro or outro.\n"
+            "If coverage is partial, start with `Preliminary summary (partial file coverage).`"
         )
 
     def _format_brief_direct_file_summary(self, text: str) -> str:
