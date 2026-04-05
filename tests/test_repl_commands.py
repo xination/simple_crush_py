@@ -11,6 +11,7 @@ class FakeSession:
     id: str
     backend: str
     title: str = "Demo"
+    model: str = "demo-model"
 
 
 class FakeSessionStore:
@@ -31,10 +32,17 @@ class FakeRuntime:
         self.new_session_calls = 0
         self.prompts = []
         self.show_thinking_flags = []
+        self.models = []
 
     def new_session(self):
         self.new_session_calls += 1
         return FakeSession("new-session", "demo")
+
+    def set_session_model(self, model):
+        self.models.append(model)
+        session = FakeSession("new-session", "demo", model=model)
+        self.active_session = session
+        return session
 
     def available_backends(self):
         return ["demo", "other"]
@@ -179,3 +187,15 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertTrue(handled)
         self.assertEqual(runtime.prompts, [("Give a short summary for README.md", True)])
         self.assertEqual(runtime.show_thinking_flags, [True])
+
+    def test_model_command_sets_session_model(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/model google/gemma-3-4b")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(runtime.models, ["google/gemma-3-4b"])
+        self.assertIn("model=google/gemma-3-4b", stdout.getvalue())

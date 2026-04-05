@@ -2,7 +2,7 @@ import re
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,6 +13,7 @@ from ..output_sanitize import sanitize_content, sanitize_text
 from ..store.session_store import SessionMeta, SessionStore
 from ..tools.base import ToolError
 from ..tools.registry import ToolRegistry
+from .intent_router import IntentDecision, heuristic_intent_decision, merge_intent_decision, route_intent_with_llm
 from .prompt_intent import PromptIntent, classify_prompt_intent
 from .runtime_prompts import (
     BASE_READ_HELPER_SYSTEM_PROMPT,
@@ -42,6 +43,7 @@ class SessionRuntimeState:
     unresolved_branches: List[str] = field(default_factory=list)
     file_summaries: Dict[str, str] = field(default_factory=dict)
     summary_cache: Dict[Tuple[str, float, int, int], str] = field(default_factory=dict)
+    intent_cache: Dict[str, IntentDecision] = field(default_factory=dict)
 
 
 class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
@@ -72,13 +74,21 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         self._session_states.setdefault(session.id, SessionRuntimeState())
         return session
 
+    def set_session_model(self, model: str) -> SessionMeta:
+        if self.active_session is None:
+            self.new_session()
+        assert self.active_session is not None
+        session = self.session_store.update_session_model(self.active_session.id, model)
+        self.active_session = session
+        return session
+
     def ask(self, prompt: str, stream: bool = False, show_thinking: bool = False) -> str:
         if self.active_session is None:
             self.new_session()
         assert self.active_session is not None
 
         session = self.active_session
-        backend_cfg = self._get_backend_config(session.backend)
+        backend_cfg = self._backend_config_for_session(session)
         backend = self._create_backend(backend_cfg)
         state = self._state_for_session(session.id)
         if not state.entry_point:
@@ -241,9 +251,15 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             reader_completed_paths.add(forced_cat_path)
             if intent.direct_file_summary:
                 final_text = self._finalize_direct_file_summary_output(session_id, prompt, reader_summary.strip())
+                self._emit_stream_final_text(final_text, stream=stream)
                 return self._store_final_assistant_text(session_id, final_text)
             if intent.guide_mode or intent.direct_file_trace:
                 final_text = reader_summary.strip()
+                self._emit_stream_final_text(final_text, stream=stream)
+                return self._store_final_assistant_text(session_id, final_text)
+            if self._should_accept_reader_summary_directly(prompt, reader_summary):
+                final_text = reader_summary.strip()
+                self._emit_stream_final_text(final_text, stream=stream)
                 return self._store_final_assistant_text(session_id, final_text)
             conversation = self._append_reader_summary_message(conversation, forced_cat_path, reader_summary)
 
@@ -604,6 +620,27 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
     def _prompt_intent(self, prompt: str) -> PromptIntent:
         return classify_prompt_intent(prompt, self._prompt_direct_file_path(prompt))
 
+    def _intent_decision(self, prompt: str, backend: Optional[BaseBackend] = None) -> IntentDecision:
+        assert self.active_session is not None
+        state = self._state_for_session(self.active_session.id)
+        if prompt in state.intent_cache:
+            return state.intent_cache[prompt]
+        prompt_intent = self._prompt_intent(prompt)
+        direct_file_path = prompt_intent.direct_file_path
+        is_code_file = bool(direct_file_path and not self._prefer_cat_only_for_path(direct_file_path))
+        fallback = heuristic_intent_decision(prompt, direct_file_path, is_code_file, prompt_intent)
+        decision = fallback
+        if backend is not None and direct_file_path and not prompt_intent.guide_mode:
+            llm_decision = route_intent_with_llm(
+                backend=backend,
+                prompt=prompt,
+                direct_file_path=direct_file_path,
+                is_code_file=is_code_file,
+            )
+            decision = merge_intent_decision(llm_decision, fallback)
+        state.intent_cache[prompt] = decision
+        return decision
+
     def _store_final_assistant_text(self, session_id: str, text: str) -> str:
         final_text = sanitize_text(text).strip()
         self.session_store.append_message(
@@ -613,6 +650,41 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             metadata={"raw_content": [{"type": "text", "text": final_text}]},
         )
         return final_text
+
+    def _should_accept_reader_summary_directly(self, prompt: str, reader_summary: str) -> bool:
+        summary = sanitize_text(reader_summary).strip()
+        if not summary:
+            return False
+        intent = self._prompt_intent(prompt)
+        if not intent.direct_file_path:
+            return False
+        if intent.repo_trace_hint or intent.guide_mode or intent.direct_file_trace or intent.direct_file_summary:
+            return False
+        lowered = prompt.lower()
+        if lowered.startswith(("find ", "locate ", "grep ", "trace ")):
+            return False
+        markers = (
+            "Confirmed path:",
+            "Summary:",
+            "According to `",
+            "According to ",
+            "File flow for human review:",
+            "Flow trace for human review:",
+            "Variable trace for human review:",
+            "Candidate responsibilities for human review:",
+            "Checklist:",
+            "Beginner summary:",
+        )
+        if any(marker in summary for marker in markers):
+            return True
+        return len(summary) >= 120
+
+    def _emit_stream_final_text(self, text: str, stream: bool = False) -> None:
+        if not stream or not text:
+            return
+        self._clear_thinking_indicator_line()
+        print(text, end="", flush=True)
+        print("")
 
     def _record_agent_tool_use(
         self,
@@ -691,6 +763,12 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             return self.config.backends[name]
         except KeyError:
             raise BackendError("Unknown backend `{0}`.".format(name))
+
+    def _backend_config_for_session(self, session: SessionMeta) -> BackendConfig:
+        backend_cfg = self._get_backend_config(session.backend)
+        if session.model and session.model != backend_cfg.model:
+            return replace(backend_cfg, model=session.model)
+        return backend_cfg
 
     def _create_backend(self, backend_cfg: BackendConfig) -> BaseBackend:
         if backend_cfg.type == "openai_compat":

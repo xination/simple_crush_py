@@ -15,7 +15,11 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
 
     if runtime.active_session is None:
         session = runtime.new_session()
-        print("[session] {0} ({1})".format(session.id, session.backend))
+        model = getattr(session, "model", "")
+        if model:
+            print("[session] {0} ({1}, model={2})".format(session.id, session.backend, model))
+        else:
+            print("[session] {0} ({1})".format(session.id, session.backend))
 
     print("crush_py REPL. Type /quit to exit. Type /help for commands.")
     while True:

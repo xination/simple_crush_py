@@ -59,6 +59,13 @@ class SessionStore:
         with path.open("r", encoding="utf-8") as handle:
             return SessionMeta(**json.load(handle))
 
+    def update_session_model(self, session_id: str, model: str) -> SessionMeta:
+        meta = self.load_session(session_id)
+        meta.model = model
+        meta.updated_at = utc_now_iso()
+        self._write_meta(meta)
+        return meta
+
     def append_message(
         self,
         session_id: str,
@@ -77,6 +84,8 @@ class SessionStore:
             kind=kind,
             metadata=sanitized_metadata,
         )
+        if kind == "tool_result" and self._is_duplicate_tool_result(session_id, message):
+            return message
         path = self._session_dir(session_id) / "messages.jsonl"
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(message.to_dict(), ensure_ascii=False) + "\n")
@@ -141,6 +150,31 @@ class SessionStore:
                 lean["duration_ms"] = metadata["duration_ms"]
             return {key: value for key, value in lean.items() if value not in ("", None)}
         return {}
+
+    def _is_duplicate_tool_result(self, session_id: str, message: Message) -> bool:
+        existing = self.load_messages(session_id)
+        if not existing:
+            return False
+        previous = existing[-1]
+        if previous.kind != "tool_result":
+            return False
+        return self._tool_result_signature(previous) == self._tool_result_signature(message)
+
+    def _tool_result_signature(self, message: Message):
+        metadata = message.metadata or {}
+        args = metadata.get("args", {})
+        if isinstance(args, dict):
+            safe_args = tuple(sorted(args.items()))
+        else:
+            safe_args = ()
+        return (
+            message.role,
+            metadata.get("agent", ""),
+            metadata.get("tool", ""),
+            safe_args,
+            metadata.get("summary", ""),
+            bool(metadata.get("error", False)),
+        )
 
 
 def _derive_title(content: str) -> str:

@@ -15,13 +15,20 @@ MAX_READER_TOOL_CALLS = 3
 class ReaderRuntimeMixin:
     def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
         intent = self._prompt_intent(prompt)
+        decision = self._intent_decision(prompt, backend=backend)
         if intent.guide_mode and intent.direct_file_path and not intent.direct_file_trace:
             return self._run_direct_file_guide_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if intent.direct_file_flow_trace:
+        if decision.intent == "direct_file_doc_qa":
+            return self._run_direct_file_doc_qa_reader(session_id, backend, prompt, rel_path, stream=stream)
+        if decision.intent == "direct_file_trace" and intent.direct_file_file_flow_trace:
+            return self._run_direct_file_file_flow_reader(session_id, backend, prompt, rel_path, stream=stream)
+        if decision.intent == "direct_file_trace" and intent.direct_file_flow_trace:
             return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if intent.direct_file_variable_trace:
+        if decision.intent == "direct_file_trace" and intent.direct_file_variable_trace:
             return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if intent.direct_file_summary:
+        if decision.intent == "direct_file_trace":
+            return self._run_direct_file_file_flow_reader(session_id, backend, prompt, rel_path, stream=stream)
+        if decision.intent == "direct_file_summary":
             return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path, stream=stream)
         reader_tool_names = self._reader_tool_names_for_path(rel_path)
         strategy = (
@@ -88,8 +95,66 @@ class ReaderRuntimeMixin:
 
         raise BackendError("Reader agent exceeded the maximum number of rounds.")
 
+    def _run_direct_file_doc_qa_reader(
+        self,
+        session_id: str,
+        backend: BaseBackend,
+        prompt: str,
+        rel_path: str,
+        stream: bool = False,
+    ) -> str:
+        cat_payloads, coverage = self._collect_summary_file_reads(session_id, rel_path)
+        cat_payloads = self._compact_reader_cat_payloads(cat_payloads)
+        conversation = [
+            {
+                "role": "user",
+                "content": (
+                    "User request: {0}\n"
+                    "Target file: {1}\n"
+                    "Coverage: {2}\n"
+                    "Answer the user's exact question using only this file.\n"
+                    "Start with a direct answer.\n"
+                    "Keep it concise and evidence-backed.\n"
+                    "If the file coverage is partial, say so briefly."
+                ).format(prompt.strip(), rel_path, coverage),
+            },
+            {"role": "user", "content": cat_payloads},
+        ]
+        final_text = self._generate_text_with_optional_streaming(
+            backend,
+            BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
+            conversation,
+            stream=stream,
+        )
+        state = self._state_for_session(session_id)
+        state.file_summaries[rel_path] = _single_line(final_text, 240)
+        if rel_path and rel_path not in state.confirmed_paths:
+            state.confirmed_paths.append(rel_path)
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            final_text,
+            kind="tool_result",
+            metadata={
+                "agent": "reader",
+                "tool_name": "reader",
+                "tool_arguments": {"path": rel_path, "coverage": coverage, "mode": "doc_qa"},
+                "tool_use_id": "reader:{0}".format(rel_path),
+                "summary": final_text,
+            },
+        )
+        return final_text
+
     def _prefer_cat_only_for_path(self, rel_path: str) -> bool:
         return Path(rel_path).suffix.lower() not in SUPPORTED_SUFFIXES
+
+    def _should_use_direct_file_doc_qa(self, prompt: str, rel_path: str, intent) -> bool:
+        if not intent.direct_file_path or intent.direct_file_trace or intent.direct_file_summary or intent.guide_mode:
+            return False
+        if not self._prefer_cat_only_for_path(rel_path):
+            return False
+        lowered = prompt.lower()
+        return "according to " in lowered or "based on " in lowered
 
     def _reader_tool_names_for_path(self, rel_path: str):
         if self._prefer_cat_only_for_path(rel_path):

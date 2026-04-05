@@ -7,6 +7,7 @@ from .tools.base import ToolError
 HELP_TEXT = """Commands:
 /new                  create a new session
 /backend              show available backends
+/model [NAME]         show or set the current session model
 /ls [PATH] [DEPTH]    quick listing for a directory area
 /find PATTERN [PATH]  locate files by filename/path pattern, with fuzzy fallback
 /grep PATTERN [PATH] [INCLUDE]
@@ -21,6 +22,7 @@ VISIBLE_COMMANDS = [
     "/help",
     "/new",
     "/backend",
+    "/model",
     "/ls",
     "/find",
     "/grep",
@@ -67,6 +69,22 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         for name in runtime.available_backends():
             marker = "*" if name == runtime.active_backend_name else " "
             print("{0} {1}".format(marker, name))
+        return True, None
+    if raw == "/model":
+        print_command_hint(raw)
+        session = getattr(runtime, "active_session", None)
+        if session is None:
+            session = runtime.new_session()
+        print(getattr(session, "model", ""))
+        return True, None
+    if raw.startswith("/model "):
+        print_command_hint(raw)
+        model = raw.split(" ", 1)[1].strip()
+        if not model:
+            print("Usage: /model MODEL_NAME")
+            return True, None
+        session = runtime.set_session_model(model)
+        print("[session] {0} model={1}".format(session.id, session.model))
         return True, None
     if raw == "/tools":
         print_command_hint(raw)

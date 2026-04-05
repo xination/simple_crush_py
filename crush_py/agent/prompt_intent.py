@@ -123,6 +123,15 @@ VARIABLE_TRACE_SIGNALS = (
     "流向",
 )
 
+FILE_FLOW_TRACE_SIGNALS = (
+    "trace the flow",
+    "trace flow",
+    "flow for",
+    "flow of",
+    "control flow",
+    "execution flow",
+)
+
 GUIDE_CHECKLIST_TERMS = (
     "checklist",
     "step-by-step",
@@ -214,6 +223,7 @@ class PromptIntent:
     guide_mode: bool
     guide_output_mode: str
     trace_variable: Optional[str]
+    direct_file_file_flow_trace: bool
     direct_file_flow_trace: bool
     direct_file_variable_trace: bool
     direct_file_summary: bool
@@ -222,13 +232,16 @@ class PromptIntent:
 
     @property
     def direct_file_trace(self) -> bool:
-        return self.direct_file_flow_trace or self.direct_file_variable_trace
+        return self.direct_file_file_flow_trace or self.direct_file_flow_trace or self.direct_file_variable_trace
 
 
 def classify_prompt_intent(prompt: str, direct_file_path: Optional[str]) -> PromptIntent:
     lowered = prompt.lower()
     guide_mode = lowered.lstrip().startswith("guide mode:")
     trace_variable = extract_trace_variable(prompt)
+    direct_file_file_flow_trace = bool(
+        direct_file_path and not trace_variable and _contains_any(lowered, FILE_FLOW_TRACE_SIGNALS)
+    )
     direct_file_flow_trace = bool(direct_file_path and trace_variable and _contains_any(lowered, FLOW_TRACE_SIGNALS))
     direct_file_variable_trace = bool(
         direct_file_path
@@ -238,7 +251,12 @@ def classify_prompt_intent(prompt: str, direct_file_path: Optional[str]) -> Prom
     )
     has_summary_signal = _contains_any(lowered, SUMMARY_TERMS)
     has_structure_signal = _contains_any(lowered, STRUCTURE_TERMS)
-    has_trace_signal = direct_file_flow_trace or direct_file_variable_trace or _contains_any(lowered, REPO_TRACE_HINTS)
+    has_trace_signal = (
+        direct_file_file_flow_trace
+        or direct_file_flow_trace
+        or direct_file_variable_trace
+        or _contains_any(lowered, REPO_TRACE_HINTS)
+    )
     direct_file_summary = bool(direct_file_path and not guide_mode and has_summary_signal and not has_structure_signal and not has_trace_signal)
     brief_summary = bool(direct_file_summary and not _contains_any(lowered, DETAILED_SUMMARY_SIGNALS))
     return PromptIntent(
@@ -246,6 +264,7 @@ def classify_prompt_intent(prompt: str, direct_file_path: Optional[str]) -> Prom
         guide_mode=guide_mode,
         guide_output_mode=detect_guide_output_mode(prompt),
         trace_variable=trace_variable,
+        direct_file_file_flow_trace=direct_file_file_flow_trace,
         direct_file_flow_trace=direct_file_flow_trace,
         direct_file_variable_trace=direct_file_variable_trace,
         direct_file_summary=direct_file_summary,

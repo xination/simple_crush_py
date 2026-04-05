@@ -6,7 +6,7 @@ from typing import Dict, Optional
 
 
 DEFAULT_OPENAI_COMPAT_BASE_URL = "http://192.168.40.1:1234/v1"
-DEFAULT_OPENAI_COMPAT_MODEL = "google/gemma-4-26b-a4b"
+DEFAULT_OPENAI_COMPAT_MODEL = "google/gemma-3-4b"
 DEFAULT_BACKEND_TIMEOUT = 600
 
 
