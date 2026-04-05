@@ -1,9 +1,14 @@
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
+from ..backends.base import BackendError, BaseBackend
 from ..output_sanitize import sanitize_text
 from ..tools.outline_providers import SUPPORTED_SUFFIXES
+from .reader_runtime_support import (
+    executed_calls_from_turn,
+    single_line as _single_line,
+    tool_use_id_for_reader_tool as _tool_use_id_for_reader_tool,
+)
 from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
 
 
@@ -272,36 +277,3 @@ class ReaderRuntimeMixin:
         if rel_path:
             return "Reader summary for `{0}`:\n{1}".format(rel_path, message.content or message.metadata.get("summary", ""))
         return "Reader summary:\n{0}".format(message.content or message.metadata.get("summary", ""))
-
-
-def _single_line(text: str, max_length: int = 160) -> str:
-    normalized = " ".join(str(text).strip().split())
-    if len(normalized) <= max_length:
-        return normalized
-    return normalized[:max_length] + " ..."
-
-
-def _tool_use_id_for_cat(arguments: Dict[str, Any]) -> str:
-    path = str(arguments.get("path", "")).strip() or "<missing>"
-    if arguments.get("full"):
-        return "reader-cat-full:{0}".format(path)
-    offset = int(arguments.get("offset", 0) or 0)
-    limit = int(arguments.get("limit", 0) or 0)
-    return "reader-cat:{0}:{1}:{2}".format(path, offset, limit)
-
-
-def _tool_use_id_for_reader_tool(tool_name: str, arguments: Dict[str, Any]) -> str:
-    if tool_name == "cat":
-        return _tool_use_id_for_cat(arguments)
-    path = str(arguments.get("path", "")).strip() or "<missing>"
-    if tool_name == "grep":
-        pattern = str(arguments.get("pattern", "")).strip() or "<missing>"
-        include = str(arguments.get("include", "")).strip() or "*"
-        return "reader-grep:{0}:{1}:{2}".format(path, include, pattern)
-    return "reader-{0}:{1}".format(tool_name, path)
-
-
-def executed_calls_from_turn(turn: AssistantTurn, limit: int) -> List[ToolCall]:
-    if limit <= 0:
-        return []
-    return turn.tool_calls[:limit]

@@ -14,11 +14,16 @@ BRIEF_SUMMARY_SIGNALS = (
     "three bullets",
     "short",
     "摘要",
+    "重點",
     "簡述",
-    "簡單說明",
-    "重點整理",
-    "三點",
+    "簡短",
+    "簡單說",
     "3點",
+    "??",
+    "蝪∟膩",
+    "蝪∪隤芣?",
+    "???渡?",
+    "銝?",
 )
 
 DETAILED_SUMMARY_SIGNALS = (
@@ -33,11 +38,16 @@ DETAILED_SUMMARY_SIGNALS = (
     "tag:",
     "suggested keep",
     "suggested review/remove",
-    "詳細摘要",
-    "詳細說明",
+    "詳細",
     "完整摘要",
-    "職責",
+    "人類審查",
     "證據",
+    "標記",
+    "閰喟敦??",
+    "閰喟敦隤芣?",
+    "摰??",
+    "?瑁痊",
+    "霅?",
 )
 
 SUMMARY_TERMS = (
@@ -48,14 +58,19 @@ SUMMARY_TERMS = (
     "what does",
     "responsible for",
     "摘要",
-    "總結",
-    "概要",
     "簡述",
     "說明",
     "解釋",
     "重點",
-    "職責",
+    "隤芣?",
     "bullets",
+    "??",
+    "蝮賜?",
+    "璁?",
+    "蝪∟膩",
+    "閫??",
+    "??",
+    "?瑁痊",
 )
 
 STRUCTURE_TERMS = (
@@ -74,8 +89,15 @@ STRUCTURE_TERMS = (
     "方法",
     "結構",
     "大綱",
-    "符號",
     "架構",
+    "symbol",
+    "憿",
+    "?賢?",
+    "?寞?",
+    "蝯?",
+    "憭抒雇",
+    "蝚西?",
+    "?嗆?",
 )
 
 REPO_TRACE_HINTS = (
@@ -88,10 +110,15 @@ REPO_TRACE_HINTS = (
     "flows",
     "moves through",
     "追蹤",
-    "追查",
+    "追踪",
     "流向",
     "流程",
-    "呼叫路徑",
+    "傳遞",
+    "餈質馱",
+    "餈賣",
+    "瘚?",
+    "瘚?",
+    "?澆頝臬?",
 )
 
 FLOW_TRACE_SIGNALS = (
@@ -100,9 +127,11 @@ FLOW_TRACE_SIGNALS = (
     " flow ",
     "moves through",
     "handled",
-    "追蹤",
     "流向",
     "流程",
+    "餈質馱",
+    "瘚?",
+    "瘚?",
 )
 
 VARIABLE_TRACE_SIGNALS = (
@@ -116,11 +145,19 @@ VARIABLE_TRACE_SIGNALS = (
     " is set",
     " is passed",
     "追蹤變數",
-    "追查變數",
-    "從哪裡來",
-    "在哪裡設定",
-    "被傳到",
+    "追踪變數",
+    "追蹤 ",
+    "追踪 ",
     "流向",
+    "在哪裡",
+    "傳到哪",
+    "怎麼傳",
+    "餈質馱霈",
+    "餈賣霈",
+    "敺鋆∩?",
+    "?典鋆∟身摰?",
+    "鋡怠??",
+    "瘚?",
 )
 
 FILE_FLOW_TRACE_SIGNALS = (
@@ -138,8 +175,11 @@ GUIDE_CHECKLIST_TERMS = (
     "step by step",
     "action list",
     "檢查清單",
-    "逐步",
     "步驟",
+    "逐步",
+    "瑼Ｘ皜",
+    "?郊",
+    "甇仿?",
 )
 
 GUIDE_TROUBLESHOOTING_TERMS = (
@@ -153,10 +193,15 @@ GUIDE_TROUBLESHOOTING_TERMS = (
     "卡住",
     "失敗",
     "錯誤",
-    "無法",
     "不能用",
-    "故障排除",
-    "排錯",
+    "疑難排解",
+    "?∩?",
+    "憭望?",
+    "?航炊",
+    "?⊥?",
+    "銝??",
+    "???",
+    "?",
 )
 
 GUIDE_LEARNING_PATH_TERMS = (
@@ -167,10 +212,14 @@ GUIDE_LEARNING_PATH_TERMS = (
     "which docs should i read",
     "onboarding",
     "先讀",
-    "先看",
+    "從哪開始",
     "閱讀順序",
-    "入門",
-    "上手",
+    "學習路線",
+    "??",
+    "??",
+    "?梯???",
+    "?仿?",
+    "銝?",
 )
 
 GUIDE_EXACT_EVIDENCE_TERMS = (
@@ -183,9 +232,13 @@ GUIDE_EXACT_EVIDENCE_TERMS = (
     "verbatim",
     "哪一行",
     "哪些行",
-    "精確行號",
+    "精確行",
     "逐字",
-    "引用",
+    "原文",
+    "?芯?銵?",
+    "蝎曄Ⅱ銵?",
+    "??",
+    "撘",
 )
 
 GUIDE_REREAD_TERMS = (
@@ -196,8 +249,11 @@ GUIDE_REREAD_TERMS = (
     "full text",
     "重讀",
     "重新讀",
-    "讀檔案",
     "全文",
+    "??",
+    "?霈",
+    "霈瑼?",
+    "?冽?",
 )
 
 TRACE_VARIABLE_PATTERNS = (
@@ -207,13 +263,14 @@ TRACE_VARIABLE_PATTERNS = (
     r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+is\s+set",
     r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+comes\s+from",
     r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+is\s+passed",
-    r"追蹤變數\s*([A-Za-z_][A-Za-z0-9_]*)",
-    r"追查變數\s*([A-Za-z_][A-Za-z0-9_]*)",
-    r"追蹤\s*([A-Za-z_][A-Za-z0-9_]*)\s*的?流向",
-    r"追查\s*([A-Za-z_][A-Za-z0-9_]*)\s*的?流向",
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*從哪裡來",
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*在哪裡設定",
-    r"([A-Za-z_][A-Za-z0-9_]*)\s*被傳到哪裡",
+    r"追蹤\s*([A-Za-z_][A-Za-z0-9_]*)",
+    r"追踪\s*([A-Za-z_][A-Za-z0-9_]*)",
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*在\s*.+?\s*的流向",
+    r"([A-Za-z_][A-Za-z0-9_]*)\s*流向",
+    r"餈質馱霈\s*([A-Za-z_][A-Za-z0-9_]*)",
+    r"餈賣霈\s*([A-Za-z_][A-Za-z0-9_]*)",
+    r"餈質馱\s*([A-Za-z_][A-Za-z0-9_]*)",
+    r"餈賣\s*([A-Za-z_][A-Za-z0-9_]*)",
 )
 
 
@@ -257,7 +314,9 @@ def classify_prompt_intent(prompt: str, direct_file_path: Optional[str]) -> Prom
         or direct_file_variable_trace
         or _contains_any(lowered, REPO_TRACE_HINTS)
     )
-    direct_file_summary = bool(direct_file_path and not guide_mode and has_summary_signal and not has_structure_signal and not has_trace_signal)
+    direct_file_summary = bool(
+        direct_file_path and not guide_mode and has_summary_signal and not has_structure_signal and not has_trace_signal
+    )
     brief_summary = bool(direct_file_summary and not _contains_any(lowered, DETAILED_SUMMARY_SIGNALS))
     return PromptIntent(
         direct_file_path=direct_file_path,
