@@ -109,6 +109,25 @@ python -m crush_py --trace "the variable session_id in crush_py/store/session_st
 python -m crush_py --guide "turn README.md into a checklist"
 ```
 
+## Tips For Better Results
+
+- Prefer concrete file or path requests over broad repo questions.
+- Good examples:
+  - `python -m crush_py --summarize README.md`
+  - `python -m crush_py --prompt "summarize crush_py/agent/runtime.py"`
+  - `python -m crush_py --prompt "according to README.md, what is this project for?"`
+  - `python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"`
+  - `python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"`
+- Less reliable prompts:
+  - `python -m crush_py --prompt "what is this repo for?"`
+  - `python -m crush_py --prompt "explain the project"`
+- Why this helps:
+  - concrete paths make it easier to gather local evidence first
+  - broad repo questions may need an extra discovery step before the answer is grounded
+- If you want a repo-level answer, anchor it on evidence:
+  - `python -m crush_py --prompt "according to README.md, what is this repo for?"`
+  - `python -m crush_py --prompt "summarize README.md and tell me what this repo is for"`
+
 ## 📝 Summary Mode
 
 ### `--summarize`
