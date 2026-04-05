@@ -1,1 +1,1 @@
-# Package marker for test imports.
+"""Utility scripts used by tests and local benchmarking."""

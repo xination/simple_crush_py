@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 
@@ -67,36 +66,18 @@ def compare_result_sets(baseline, candidate):
 
         if left_first_tool != right_first_tool:
             summary["changed_first_tool"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_first_tool or "<none>",
-                    "candidate": right_first_tool or "<none>",
-                }
+                {"id": case_id, "baseline": left_first_tool or "<none>", "candidate": right_first_tool or "<none>"}
             )
         if left_used_cat != right_used_cat:
             summary["changed_used_view"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_used_cat,
-                    "candidate": right_used_cat,
-                }
+                {"id": case_id, "baseline": left_used_cat, "candidate": right_used_cat}
             )
         if delta != 0:
             summary["tool_call_deltas"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_tool_calls,
-                    "candidate": right_tool_calls,
-                    "delta": delta,
-                }
+                {"id": case_id, "baseline": left_tool_calls, "candidate": right_tool_calls, "delta": delta}
             )
         if left_error != right_error:
-            summary["needs_manual_review"].append(
-                {
-                    "id": case_id,
-                    "reasons": ["error status changed"],
-                }
-            )
+            summary["needs_manual_review"].append({"id": case_id, "reasons": ["error status changed"]})
             continue
 
         reasons = []
@@ -111,12 +92,7 @@ def compare_result_sets(baseline, candidate):
         if left.get("answer", "").strip() != right.get("answer", "").strip():
             reasons.append("final answer changed")
         if reasons:
-            summary["needs_manual_review"].append(
-                {
-                    "id": case_id,
-                    "reasons": reasons,
-                }
-            )
+            summary["needs_manual_review"].append({"id": case_id, "reasons": reasons})
     return summary
 
 
@@ -158,44 +134,25 @@ def compare_aggregate_sets(baseline, candidate):
 
         if left_mode != right_mode:
             summary["first_tool_mode_changes"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_mode,
-                    "candidate": right_mode,
-                }
+                {"id": case_id, "baseline": left_mode, "candidate": right_mode}
             )
 
         view_rate_delta = right_view_rate - left_view_rate
         if view_rate_delta != 0.0:
             summary["used_view_rate_deltas"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_view_rate,
-                    "candidate": right_view_rate,
-                    "delta": view_rate_delta,
-                }
+                {"id": case_id, "baseline": left_view_rate, "candidate": right_view_rate, "delta": view_rate_delta}
             )
 
         error_rate_delta = right_error_rate - left_error_rate
         if error_rate_delta != 0.0:
             summary["error_rate_deltas"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_error_rate,
-                    "candidate": right_error_rate,
-                    "delta": error_rate_delta,
-                }
+                {"id": case_id, "baseline": left_error_rate, "candidate": right_error_rate, "delta": error_rate_delta}
             )
 
         avg_tool_delta = right_avg_tool_calls - left_avg_tool_calls
         if avg_tool_delta != 0.0:
             summary["avg_tool_call_deltas"].append(
-                {
-                    "id": case_id,
-                    "baseline": left_avg_tool_calls,
-                    "candidate": right_avg_tool_calls,
-                    "delta": avg_tool_delta,
-                }
+                {"id": case_id, "baseline": left_avg_tool_calls, "candidate": right_avg_tool_calls, "delta": avg_tool_delta}
             )
 
         if left_sequence_variants != right_sequence_variants or left_answer_variants != right_answer_variants:
@@ -227,12 +184,7 @@ def compare_aggregate_sets(baseline, candidate):
         if right_answer_variants > left_answer_variants:
             reasons.append("final answers became less stable")
         if reasons:
-            summary["needs_manual_review"].append(
-                {
-                    "id": case_id,
-                    "reasons": reasons,
-                }
-            )
+            summary["needs_manual_review"].append({"id": case_id, "reasons": reasons})
 
     return summary
 
