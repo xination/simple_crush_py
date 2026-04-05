@@ -355,60 +355,16 @@ class TraceRuntimeMixin:
         return payloads, coverage, "; ".join(notes)
 
     def _is_direct_file_trace_prompt(self, prompt: str) -> bool:
-        return self._is_direct_file_flow_trace_prompt(prompt) or self._is_direct_file_variable_trace_prompt(prompt)
+        return self._prompt_intent(prompt).direct_file_trace
 
     def _is_direct_file_flow_trace_prompt(self, prompt: str) -> bool:
-        if not self._prompt_direct_file_path(prompt):
-            return False
-        variable_name = self._prompt_direct_trace_variable(prompt)
-        if not variable_name:
-            return False
-        lowered = prompt.lower()
-        signals = (
-            "trace how",
-            " flows",
-            " flow ",
-            "moves through",
-            "handled",
-        )
-        return any(signal in lowered for signal in signals)
+        return self._prompt_intent(prompt).direct_file_flow_trace
 
     def _is_direct_file_variable_trace_prompt(self, prompt: str) -> bool:
-        if not self._prompt_direct_file_path(prompt):
-            return False
-        variable_name = self._prompt_direct_trace_variable(prompt)
-        if not variable_name:
-            return False
-        if self._is_direct_file_flow_trace_prompt(prompt):
-            return False
-        lowered = prompt.lower()
-        signals = (
-            "trace the variable",
-            "trace variable",
-            "trace how",
-            "where ",
-            " flows",
-            " flow",
-            " comes from",
-            " is set",
-            " is passed",
-        )
-        return any(signal in lowered for signal in signals)
+        return self._prompt_intent(prompt).direct_file_variable_trace
 
     def _prompt_direct_trace_variable(self, prompt: str) -> Optional[str]:
-        patterns = (
-            r"trace the variable\s+([A-Za-z_][A-Za-z0-9_]*)",
-            r"trace variable\s+([A-Za-z_][A-Za-z0-9_]*)",
-            r"trace how\s+([A-Za-z_][A-Za-z0-9_]*)\s+flows?",
-            r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+is\s+set",
-            r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+comes\s+from",
-            r"where\s+([A-Za-z_][A-Za-z0-9_]*)\s+is\s+passed",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, prompt, flags=re.IGNORECASE)
-            if match:
-                return match.group(1)
-        return None
+        return self._prompt_intent(prompt).trace_variable
 
     def _direct_file_variable_trace_reader_instructions(self) -> str:
         return (

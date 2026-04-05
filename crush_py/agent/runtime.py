@@ -13,6 +13,7 @@ from ..output_sanitize import sanitize_content, sanitize_text
 from ..store.session_store import SessionMeta, SessionStore
 from ..tools.base import ToolError
 from ..tools.registry import ToolRegistry
+from .prompt_intent import PromptIntent, classify_prompt_intent
 from .runtime_prompts import (
     BASE_READ_HELPER_SYSTEM_PROMPT,
     DIRECT_FILE_APPENDIX,
@@ -230,46 +231,20 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         conversation = list(messages)
         final_text = ""
         final_raw_content = []
-        forced_cat_path = self._prompt_direct_file_path(prompt)
-        direct_file_summary = self._is_direct_file_summary_prompt(prompt)
-        direct_file_trace = self._is_direct_file_trace_prompt(prompt)
-        direct_file_guide = self._is_direct_file_guide_prompt(prompt)
+        intent = self._prompt_intent(prompt)
+        forced_cat_path = intent.direct_file_path
         reader_completed_paths = set()
 
         if forced_cat_path is not None:
             self._record_reader_delegate(session_id, forced_cat_path)
             reader_summary = self._run_reader_agent(session_id, backend, prompt, forced_cat_path, stream=stream)
             reader_completed_paths.add(forced_cat_path)
-            if direct_file_summary:
+            if intent.direct_file_summary:
                 final_text = self._finalize_direct_file_summary_output(session_id, prompt, reader_summary.strip())
-                final_raw_content = [{"type": "text", "text": final_text}]
-                self.session_store.append_message(
-                    session_id,
-                    "assistant",
-                    final_text,
-                    metadata={"raw_content": final_raw_content},
-                )
-                return final_text
-            if direct_file_guide:
+                return self._store_final_assistant_text(session_id, final_text)
+            if intent.guide_mode or intent.direct_file_trace:
                 final_text = reader_summary.strip()
-                final_raw_content = [{"type": "text", "text": final_text}]
-                self.session_store.append_message(
-                    session_id,
-                    "assistant",
-                    final_text,
-                    metadata={"raw_content": final_raw_content},
-                )
-                return final_text
-            if direct_file_trace:
-                final_text = reader_summary.strip()
-                final_raw_content = [{"type": "text", "text": final_text}]
-                self.session_store.append_message(
-                    session_id,
-                    "assistant",
-                    final_text,
-                    metadata={"raw_content": final_raw_content},
-                )
-                return final_text
+                return self._store_final_assistant_text(session_id, final_text)
             conversation = self._append_reader_summary_message(conversation, forced_cat_path, reader_summary)
 
         for _ in range(MAX_TOOL_ROUNDS):
@@ -293,63 +268,13 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             assistant_content = self._assistant_content_for_tool_turn(turn)
             conversation.append({"role": "assistant", "content": assistant_content})
             executed_calls = executed_calls_from_turn(turn)
-            self.session_store.append_message(
+            self._record_agent_tool_use(session_id, "planner", turn, executed_calls)
+            tool_results, candidate_paths = self._execute_agent_tool_calls(
                 session_id,
-                "assistant",
-                self._squashed_assistant_text(turn),
-                kind="tool_use",
-                metadata={
-                    "agent": "planner",
-                    "tool": executed_calls[0].name if executed_calls else "",
-                    "tool_names": [tool_call.name for tool_call in executed_calls],
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": dict(tool_call.arguments),
-                        }
-                        for tool_call in executed_calls
-                    ],
-                    "assistant_text": self._squashed_assistant_text(turn),
-                },
+                "planner",
+                executed_calls,
+                collect_candidate_paths=True,
             )
-
-            tool_results = []
-            candidate_paths = []
-            for tool_call in executed_calls:
-                arguments = dict(tool_call.arguments)
-                try:
-                    result = self.run_tool(tool_call.name, arguments)
-                except ToolError as exc:
-                    result = "Tool error: {0}".format(exc)
-                result = sanitize_text(result)
-
-                tool_result_block = {
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "tool_name": tool_call.name,
-                    "content": result,
-                }
-                backend_tool_result = dict(tool_result_block)
-                summary = self._summarize_tool_result(session_id, tool_call.name, arguments, result)
-                backend_tool_result["content"] = self._backend_tool_result_content(tool_call.name, result, summary)
-                tool_results.append(backend_tool_result)
-                candidate_paths.extend(self._extract_candidate_paths(tool_call.name, result))
-                self.session_store.append_message(
-                    session_id,
-                    "user",
-                    backend_tool_result["content"],
-                    kind="tool_result",
-                    metadata={
-                        "agent": "planner",
-                        "tool": tool_call.name,
-                        "tool_name": tool_call.name,
-                        "tool_arguments": arguments,
-                        "tool_use_id": tool_call.id,
-                        "summary": summary,
-                        "encoding_used": self._tool_result_encoding(tool_call.name, result),
-                    },
-                )
 
             conversation.append({"role": "user", "content": tool_results})
             reader_path = self._decide_forced_cat(prompt, candidate_paths, tool_results)
@@ -663,19 +588,102 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         return normalized[:limit].rstrip() + "\n...[retry fallback compacted]"
 
     def _system_prompt_for_prompt(self, prompt: str) -> str:
-        lowered = prompt.lower()
-        guide_mode = self._is_guide_prompt(prompt)
-        if self._is_direct_file_trace_prompt(prompt):
+        intent = self._prompt_intent(prompt)
+        if intent.direct_file_trace:
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX + TRACE_APPENDIX
-        if self._prompt_direct_file_path(prompt):
-            if guide_mode:
+        if intent.direct_file_path:
+            if intent.guide_mode:
                 return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX + GUIDE_APPENDIX
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX
-        if guide_mode:
+        if intent.guide_mode:
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + GUIDE_APPENDIX
-        if any(keyword in lowered for keyword in ("trace", "tracing", "call path", "used", "where ", "flow")):
+        if intent.repo_trace_hint:
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + TRACE_APPENDIX
         return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX
+
+    def _prompt_intent(self, prompt: str) -> PromptIntent:
+        return classify_prompt_intent(prompt, self._prompt_direct_file_path(prompt))
+
+    def _store_final_assistant_text(self, session_id: str, text: str) -> str:
+        final_text = sanitize_text(text).strip()
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            final_text,
+            metadata={"raw_content": [{"type": "text", "text": final_text}]},
+        )
+        return final_text
+
+    def _record_agent_tool_use(
+        self,
+        session_id: str,
+        agent: str,
+        turn: AssistantTurn,
+        executed_calls: List[ToolCall],
+    ) -> None:
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            self._squashed_assistant_text(turn),
+            kind="tool_use",
+            metadata={
+                "agent": agent,
+                "tool": executed_calls[0].name if executed_calls else "",
+                "tool_names": [tool_call.name for tool_call in executed_calls],
+                "tool_calls": [
+                    {
+                        "id": tool_call.id,
+                        "name": tool_call.name,
+                        "arguments": dict(tool_call.arguments),
+                    }
+                    for tool_call in executed_calls
+                ],
+                "assistant_text": self._squashed_assistant_text(turn),
+            },
+        )
+
+    def _execute_agent_tool_calls(
+        self,
+        session_id: str,
+        agent: str,
+        executed_calls: List[ToolCall],
+        collect_candidate_paths: bool = False,
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        tool_results: List[Dict[str, Any]] = []
+        candidate_paths: List[str] = []
+        for tool_call in executed_calls:
+            arguments = dict(tool_call.arguments)
+            try:
+                result = self.run_tool(tool_call.name, arguments)
+            except ToolError as exc:
+                result = "Tool error: {0}".format(exc)
+            result = sanitize_text(result)
+            summary = self._summarize_tool_result(session_id, tool_call.name, arguments, result)
+            backend_tool_result = {
+                "type": "tool_result",
+                "tool_use_id": tool_call.id,
+                "tool_name": tool_call.name,
+                "content": self._backend_tool_result_content(tool_call.name, result, summary),
+            }
+            tool_results.append(backend_tool_result)
+            if collect_candidate_paths:
+                candidate_paths.extend(self._extract_candidate_paths(tool_call.name, result))
+            self.session_store.append_message(
+                session_id,
+                "user",
+                backend_tool_result["content"],
+                kind="tool_result",
+                metadata={
+                    "agent": agent,
+                    "tool": tool_call.name,
+                    "tool_name": tool_call.name,
+                    "tool_arguments": arguments,
+                    "tool_use_id": tool_call.id,
+                    "summary": summary,
+                    "encoding_used": self._tool_result_encoding(tool_call.name, result),
+                },
+            )
+        return tool_results, candidate_paths
 
     def _get_backend_config(self, backend_name: Optional[str]) -> BackendConfig:
         name = backend_name or self.active_backend_name or self.config.default_backend

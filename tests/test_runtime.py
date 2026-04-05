@@ -1234,7 +1234,7 @@ class AgentRuntimeTests(unittest.TestCase):
             (target / "session_store.py").write_text("class SessionStore:\n    pass\n", encoding="utf-8")
             config = self._make_config(workspace)
             runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
-            runtime._session_has_partial_reader_summary = lambda session_id: True
+            runtime._has_partial_reader_summary_for_path = lambda session_id, rel_path: True
 
             text = runtime._postprocess_direct_file_summary_output(
                 "session-1",
@@ -1243,6 +1243,40 @@ class AgentRuntimeTests(unittest.TestCase):
             )
 
             self.assertIn("Preliminary summary (partial file coverage).", text)
+
+    def test_postprocess_direct_file_summary_output_ignores_partial_from_other_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "store"
+            target.mkdir(parents=True)
+            (target / "session_store.py").write_text("class SessionStore:\n    pass\n", encoding="utf-8")
+            (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            session = runtime.new_session()
+
+            store.append_message(
+                session.id,
+                "assistant",
+                "Preliminary summary (partial file coverage).",
+                kind="tool_result",
+                metadata={
+                    "agent": "reader",
+                    "tool_name": "reader",
+                    "tool_arguments": {"path": "README.md", "coverage": "partial", "mode": "summary"},
+                    "tool_use_id": "reader:README.md",
+                    "summary": "Preliminary summary (partial file coverage).",
+                },
+            )
+
+            text = runtime._postprocess_direct_file_summary_output(
+                session.id,
+                "Give a summary for crush_py/store/session_store.py.",
+                "1. Main responsibility\n   Evidence: SessionStore",
+            )
+
+            self.assertFalse(text.startswith("Preliminary summary"))
 
     def test_direct_file_summary_defaults_to_brief_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1406,6 +1440,46 @@ class AgentRuntimeTests(unittest.TestCase):
                 if message.kind == "tool_use" and message.metadata.get("tool") == "cat"
             ]
             self.assertEqual(len(cat_tool_uses), 2)
+
+    def test_guide_partial_previous_summary_forces_reread(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text(
+                "Overview\nSetup\nRun command\nTroubleshooting\n",
+                encoding="utf-8",
+            )
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeGuideFollowUpBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+            session = runtime.new_session()
+
+            store.append_message(
+                session.id,
+                "assistant",
+                "Preliminary guide (partial file coverage).\nBeginner summary:\n- Goal: partial",
+                kind="tool_result",
+                metadata={
+                    "agent": "reader",
+                    "tool_name": "reader",
+                    "tool_arguments": {"path": "README.md", "coverage": "partial", "mode": "guide"},
+                    "tool_use_id": "reader:README.md",
+                    "summary": "Preliminary guide (partial file coverage).\nBeginner summary:\n- Goal: partial",
+                },
+            )
+
+            runtime.ask(
+                "Guide mode:\n"
+                "User request: I am stuck during setup in README.md\n"
+                "Guide expectations:\n"
+                "- answer from workspace docs when possible\n"
+                "- explain for a beginner in plain language"
+            )
+
+            self.assertEqual(len(backend.reader_messages), 1)
+            self.assertIn("Previous guide summary for README.md", backend.reader_messages[0][0]["content"])
+            self.assertNotIn("Reuse the previous guide summary first", backend.reader_messages[0][0]["content"])
 
     def test_brief_direct_file_summary_omits_evidence_and_review_scaffolding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1939,6 +2013,43 @@ class AgentRuntimeTests(unittest.TestCase):
             runtime.ask("What is in README.md?")
 
             self.assertEqual(backend.reader_tools_seen, [["cat"]])
+
+    def test_base_system_prompt_distinguishes_discovery_from_evidence_tools(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            system_prompt = runtime._system_prompt_for_prompt("Find where session_id is used")
+
+            self.assertIn("Discovery tools narrow the search", system_prompt)
+            self.assertIn("Evidence tools confirm claims: `cat`.", system_prompt)
+            self.assertIn("For docs, config, text, and other non-code files, use `cat` instead.", system_prompt)
+
+    def test_trace_system_prompt_strengthens_uncertainty_language(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            system_prompt = runtime._system_prompt_for_prompt("Trace how prompt flows inside crush_py/agent/runtime.py")
+
+            self.assertIn("Trace mode:", system_prompt)
+            self.assertIn("treat grep hits as leads, not proof", system_prompt)
+            self.assertIn("label claims as confirmed, likely, or unknown", system_prompt)
+
+    def test_traditional_chinese_prompt_intent_detection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "crush_py" / "store"
+            target.mkdir(parents=True)
+            (target / "session_store.py").write_text("class SessionStore:\n    pass\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            self.assertTrue(runtime._is_direct_file_summary_prompt("請摘要 crush_py/store/session_store.py"))
+            self.assertTrue(runtime._is_brief_summary_prompt("請簡述 crush_py/store/session_store.py"))
+            self.assertTrue(runtime._is_direct_file_flow_trace_prompt("追蹤 session_id 的流向，檔案在 crush_py/store/session_store.py"))
 
     def test_plain_backend_persists_final_assistant_raw_content(self):
         with tempfile.TemporaryDirectory() as tmpdir:

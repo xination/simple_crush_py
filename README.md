@@ -1,19 +1,23 @@
-# 🧭 crush_py
+# crush_py
 
-以 **Python 3.9** 為優先、專門給 **3B 級本機小模型** 使用的 repo 閱讀助手。
+一個專門給小型本地模型使用的 **read-focused repository helper**。
 
-## ✨ 這個版本的定位
+它的目標不是當通用聊天助理，而是用一組很小、很穩定的 read-only 工具，幫模型更可靠地閱讀 repo、追 code flow、整理文件內容。
 
-- 📚 以 **read-only repo exploration** 為核心
-- 🧵 主要任務是：
-  - instruction Q&A
-  - Python code tracing
-- 🧠 設計重點不是功能很多，而是：
-  - tool 選擇要少
-  - context 要穩
-  - 小模型不要被大型輸出撐爆
+## 🎯 專案定位
 
-## 🛠️ 核心工具
+- 🔍 以 **read-only repo exploration** 為核心
+- 🧠 針對小型模型優化，特別重視：
+  - tool 選擇清楚
+  - context 穩定
+  - 回答要有本地證據
+  - uncertainty 要誠實標示
+- 🧭 主要支援 3 種任務：
+  - 檔案摘要 `--summarize`
+  - 程式流向追蹤 `--trace`
+  - 文件導向教學 `--guide`
+
+## 🧰 核心工具
 
 - `ls`
 - `tree`
@@ -22,118 +26,212 @@
 - `get_outline`
 - `cat`
 
-這些工具的預期流程是：
+### 工具角色
 
-1. `tree` / `ls` 看區域
-2. `find` 找檔
-3. `grep` 找符號或字串
-4. `get_outline` 確認 symbol 範圍
-5. `cat` 讀局部區塊
-6. 再回答
+- 🗺️ **discovery tools**
+  - `ls` / `tree`：看結構
+  - `find`：找檔名
+  - `grep`：找符號、字串、候選位置
+  - `get_outline`：看 code symbol 結構
+- 📌 **evidence tool**
+  - `cat`：確認實際內容，作為最終證據
 
-## 🔍 適合的問法
+### 使用原則
 
-- 💬「這個 repo 的主要結構是什麼？」
-- 💬「幫我 trace Python 裡 `main()` 之後呼叫了哪些函式。」
-- 💬「這個設定值在哪裡被讀取？」
-- 💬「請根據實際檔案內容回答，不確定的地方要明說。」
+1. 先用最輕的 discovery tool 縮小範圍。
+2. 找到具體檔案後，再用 `cat` 讀內容。
+3. `get_outline` 只用在支援的 code 檔案。
+4. `README.md`、docs、config、text 等非 code 檔案，優先直接用 `cat`。
+5. `grep` 命中是線索，不是證明。
+
+## 🧠 Runtime Flow 概念
+
+### Planner / Reader 分工
+
+- 🧭 **Planner**
+  - 先找候選檔案
+  - 盡量用 `ls` / `tree` / `find` / `grep`
+  - 確認到單一具體路徑後，再交給 reader
+- 📖 **Reader**
+  - 一次只讀一個具體檔案
+  - 只用 `get_outline` / `cat`
+  - 回傳檔案摘要、局部證據、未解不確定性
+
+### Intent 分流
+
+目前 prompt intent 已集中處理，並同時支援英文與常見繁中表達。
+
+- `--summarize`
+  - 檔案職責摘要
+  - 不是 trace
+  - 不是 guide
+- `--trace`
+  - 追變數、值、flow、handoff、storage
+  - 重視 confirmed / likely / unknown
+- `--guide`
+  - 面向 workspace docs 的 beginner-friendly 說明
+  - 適合 setup、checklist、onboarding、troubleshooting
 
 ## 🚀 快速開始
 
-1. 準備 `config.json`
-2. 確認 LM Studio / OpenAI-compatible API 可連線
-3. 在此目錄執行：
+### 1. 準備 `config.json`
+
+```json
+{
+  "workspace_root": ".",
+  "sessions_dir": ".crush_py/sessions",
+  "default_backend": "lm_studio",
+  "trace_mode": "lean",
+  "backends": {
+    "lm_studio": {
+      "type": "openai_compat",
+      "model": "google/gemma-4-26b-a4b",
+      "base_url": "http://192.168.40.1:1234/v1",
+      "api_key": "not-needed",
+      "timeout": 600,
+      "max_tokens": 2048
+    }
+  }
+}
+```
+
+### 2. 啟動 REPL
 
 ```bash
 python -m crush_py
 ```
 
-### CLI summary 用法
+### 3. 單次指令模式
 
 ```bash
 python -m crush_py --summarize README.md
-python -m crush_py --summarize-brief README.md
+python -m crush_py --summarize-detail README.md
+python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
+python -m crush_py --guide "turn README.md into a checklist"
 ```
 
-- `--summarize`：direct-file summary 會走 `review draft mode`
-- `--summarize-brief`：direct-file summary 會走 `brief summary mode`
-- `--prompt "quickly summarize README.md"` 也會走 `brief summary mode`
+## 📝 Summary Mode
 
-### CLI trace 用法
+### `--summarize`
+
+```bash
+python -m crush_py --summarize README.md
+```
+
+- 回傳短版 3 點摘要
+- 目標是說明「這個檔案主要負責什麼」
+- direct-file summary 會優先走 `cat`
+- 只有使用者明確在問 structure / class / method / architecture 時，才會偏向 `get_outline`
+
+### `--summarize-detail`
+
+```bash
+python -m crush_py --summarize-detail README.md
+```
+
+- 回傳 review-draft 風格的詳細摘要
+- 會帶 `Evidence:`、`Tag:` 等欄位
+
+### partial coverage 行為
+
+- 若檔案過大、reader 只能讀到部分內容，輸出會標記：
+  - `Preliminary summary (partial file coverage).`
+- 這個 partial 標記現在是 **以當前檔案為準**
+  - 不會再被同 session 裡其他檔案的 partial 結果污染
+
+## 🔬 Trace Mode
 
 ```bash
 python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
 python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
 ```
 
-- `variable trace` 目前會優先輸出：
-  - `Variable`
-  - `Confirmed file`
-  - `Coverage`
-  - evidence-backed sections
-- `flow trace` 目前會優先輸出：
-  - `Target`
-  - `Confirmed file`
-  - `Coverage`
-  - `Reviewed symbol`
-  - `Reviewed lines`
-  - evidence-backed flow sections
-- `summary`、`variable trace`、`flow trace` 都共用 backend timeout，預設是 `600s`
+### Trace 的核心原則
 
-## 🧾 Trace 報告風格
+- ✅ 區分：
+  - confirmed
+  - likely
+  - unknown
+- ✅ `grep` 命中只算 lead，不算 proof
+- ✅ 寧可給誠實的局部 trace，也不要過度宣稱整條 flow
+- ✅ 對 Python / C++ 都會保留動態行為的不確定性
 
-- ✅ 盡量使用 qualname，例如 `SessionStore.create_session`、`AgentRuntime.ask`
-- ✅ `Coverage` 會明確標示是不是只看了 local reviewed block
-- ✅ `flow trace` 會區分：
-  - entry point
-  - local transformation
-  - storage or persistence
-  - downstream handoff
-- ✅ 最後會保留 `Unresolved uncertainty`
-- ❌ 不做跨函式 dataflow 幻覺推論
-- ❌ 不把自然語言摘要寫得比證據更大聲
+### variable trace
 
-### 範例：variable trace
+重點通常會包含：
 
-```text
-Variable trace for human review:
+- `Variable`
+- `Confirmed file`
+- `Coverage`
+- assignment / reassignment / pass-through / usage role
+- `Unresolved uncertainty`
 
-Variable: session_id
-Confirmed file: crush_py/store/session_store.py
-Coverage: local (reviewed `SessionStore.create_session` block only)
+### flow trace
 
-1. Defined or first assigned at line 32 inside `SessionStore.create_session`
-   Evidence: `session_id = str(uuid.uuid4())`
+重點通常會包含：
 
-2. Reassignment
-   No confirmed reassignment in the reviewed block.
+- `Target`
+- `Confirmed file`
+- `Coverage`
+- `Reviewed symbol`
+- `Reviewed lines`
+- entry point
+- transformation
+- storage / persistence
+- downstream handoff
+- `Unresolved uncertainty`
+
+## 📚 Guide Mode
+
+```bash
+python -m crush_py --guide "summarize README.md for a beginner"
+python -m crush_py --guide "turn README.md into a checklist"
+python -m crush_py --guide "which parts of README.md should a beginner read first?"
+python -m crush_py --guide "I am stuck at step 3 in README.md"
 ```
 
-### 範例：flow trace
+### 適合的問題
 
-```text
-Flow trace for human review:
+- 👶 beginner-friendly 文件說明
+- ✅ checklist
+- 🧰 troubleshooting
+- 🪜 onboarding / learning path
 
-Target: prompt
-Confirmed file: crush_py/agent/runtime.py
-Coverage: local (reviewed `AgentRuntime.ask` block only)
-Reviewed symbol: AgentRuntime.ask
-Reviewed lines: 66-109
+### guide 行為
 
-1. Entry point at line 66 inside `AgentRuntime.ask`
-   Evidence: `def ask(self, prompt: str, stream: bool = False) -> str:`
+- 優先回答 workspace 內的文件
+- 盡量用 plain language
+- 盡量給 action-oriented 結構
+- 會補上 `Sources:`，附檔名與行號線索
 
-2. Confirmed local transformation at line 76 inside `AgentRuntime.ask`
-   Evidence: `state.entry_point = prompt.strip()`
+### guide summary reuse
 
-3. Confirmed storage or persistence at line 78 inside `AgentRuntime.ask`
-   Evidence: `self.session_store.append_message(session.id, "user", prompt)`
+同一份文件的 multi-turn follow-up 會盡量重用上一輪 guide summary，避免每次都重讀整份 doc。
 
-4. Confirmed downstream handoff at line 80 inside `AgentRuntime.ask`
-   Evidence: `system_prompt = self._system_prompt_for_prompt(prompt)`
+但以下情況 **不會 reuse**，而是強制 reread：
+
+- 上一輪 guide coverage 不是 `complete` 或 `reused`
+- 使用者要求精確行號、逐字內容、引用
+- 使用者明確要求重讀或看全文
+
+也就是說：
+
+- ✅ 完整且夠新的 guide summary 可以重用
+- ❌ partial / 過時 / 不足的 guide summary 不會被硬拿來回答
+
+### Multi-turn guide 範例
+
+```bash
+python -m crush_py --guide "summarize README.md for a beginner"
+python -m crush_py --session <session_id> --guide "turn README.md into a checklist"
+python -m crush_py --session <session_id> --guide "I am stuck during setup in README.md"
 ```
 
-## 💬 REPL 指令
+- 第一次會建立 session
+- 後續用同一個 `session_id` 才能保留前文
+- 這也是最簡單的 guide smoke test
+
+## 💻 REPL 指令
 
 - `/help`
 - `/new`
@@ -149,65 +247,23 @@ Reviewed lines: 66-109
 - `/history`
 - `/trace`
 
-## 📘 常用指令格式
-
-### 📂 `/tree [PATH] [DEPTH]`
-
-```bash
-/tree crush_py 2
-```
-
-### 🗂️ `/ls [PATH] [DEPTH]`
+### 常用例子
 
 ```bash
 /ls crush_py/tools 1
-```
-
-### 🔎 `/find PATTERN [PATH]`
-
-```bash
 /find "*.py" crush_py
-```
-
-### 🧵 `/grep PATTERN [PATH] [INCLUDE]`
-
-```bash
 /grep "SessionStore" crush_py "*.py"
-```
-
-### 🧭 `/get_outline PATH`
-
-`get_outline` 是 internal read tool，通常由 runtime 自動使用，不一定需要手動叫。
-
-### 📄 `/cat PATH [OFFSET] [LIMIT]`
-
-```bash
 /cat crush_py/store/session_store.py 0 80
 ```
 
-## ⚙️ 範例設定
+### `get_outline`
 
-- backend timeout 建議值：`600s / 10min`
+- `get_outline` 是 internal read tool
+- 通常由 runtime 自動選擇
+- 適合看 class / function / method / symbol 結構
+- 不適合用來讀 docs 或 config
 
-```json
-{
-  "workspace_root": ".",
-  "sessions_dir": ".crush_py/sessions",
-  "default_backend": "lm_studio",
-  "backends": {
-    "lm_studio": {
-      "type": "openai_compat",
-      "model": "google/gemma-4-26b-a4b",
-      "base_url": "http://192.168.40.1:1234/v1",
-      "api_key": "not-needed",
-      "timeout": 600,
-      "max_tokens": 2048
-    }
-  }
-}
-```
-
-## 🧪 執行測試
+## 🧪 測試
 
 ```bash
 python -m unittest discover -s tests
@@ -215,78 +271,19 @@ python -m unittest tests.test_tools -q
 python -m unittest tests.test_runtime -q
 ```
 
-### 建議 smoke tests
+### 推薦 smoke tests
 
 ```bash
+python -m crush_py --summarize README.md
 python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
-python -m crush_py --trace "the variable default_backend in crush_py/config.py"
 python -m crush_py --trace "how prompt flows inside crush_py/agent/runtime.py"
-```
-
-## 📎 補充文件
-
-- [`session_2026-04-04_learnings.md`](session_2026-04-04_learnings.md)
-- [`task8.md`](task8.md)
-- [`task9.md`](task9.md)
-- [`archieve/summary.txt`](archieve/summary.txt)
-- [`archieve/plan.md`](archieve/plan.md)
-- [`archieve/NEXT.md`](archieve/NEXT.md)
-
-## Guide mode
-
-```bash
-python -m crush_py --guide "summarize README.md for a beginner"
 python -m crush_py --guide "turn README.md into a checklist"
-python -m crush_py --guide "which parts of README.md should a beginner read first?"
-python -m crush_py --guide "I am stuck at step 3 in README.md"
 ```
 
-- `--guide` adds a beginner-friendly docs mode for workspace-local instruction files.
-- It prefers repo-local docs, plain-language explanations, and action-oriented output.
-- When the prompt names one concrete doc, the runtime reads that file first and includes source hints with file and line clues.
-- v1 stays intentionally lightweight: local read tools only, no embeddings, no external web knowledge, and no cross-repo retrieval.
+## 📎 相關文件
 
-### Multi-turn guide Q&A demo
-
-```text
-Q1: summarize README.md for a beginner
-
-A1:
-- Goal: explain what the project is for.
-- You will accomplish: understand the tool's scope before using it.
-- Prepare first: check the required Python version and backend setup.
-- Main steps: read the overview, setup notes, and CLI examples first.
-- Common beginner confusion: the project is read-only and does not act like a general web assistant.
-- Sources: README.md:1-31
-
-Q2: turn README.md into a checklist
-
-A2:
-1. Read the project overview and scope.
-2. Confirm the required runtime and backend settings.
-3. Try the documented CLI commands in the suggested order.
-Success check: you can run one example command and understand what each read tool is for.
-Sources: README.md:1-31
-
-Q3: I am stuck during setup in README.md
-
-A3:
-- Likely current step: the initial environment or backend configuration stage.
-- Relevant source section: the setup section and example commands.
-- Possible causes: missing Python version, backend not configured, or running from the wrong workspace.
-- What to check first: compare your local setup with the documented config example.
-- What to do next: fix the missing prerequisite, then rerun the first example command.
-- Sources: README.md:19-31, README.md:97-113
-```
-
-### CLI `--session` smoke demo
-
-```bash
-python -m crush_py --guide "summarize README.md for a beginner"
-python -m crush_py --session <session_id> --guide "turn README.md into a checklist"
-python -m crush_py --session <session_id> --guide "I am stuck during setup in README.md"
-```
-
-- The first command creates the session and writes a new session folder under `.crush_py/sessions/`.
-- Use that generated session id in the later commands so the follow-up guide questions stay in the same conversation.
-- This is the simplest smoke test for multi-turn guide behavior on one local doc.
+- [task12.md](task12.md)
+- [wishList.md](wishList.md)
+- [session_2026-04-04_learnings.md](session_2026-04-04_learnings.md)
+- [archieve/plan.md](archieve/plan.md)
+- [archieve/NEXT.md](archieve/NEXT.md)

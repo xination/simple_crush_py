@@ -8,16 +8,6 @@ from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
 
 SUMMARY_CHUNK_LIMIT = 400
 MAX_SUMMARY_CHUNKS = 3
-BRIEF_SUMMARY_SIGNALS = (
-    "briefly",
-    "brief summary",
-    "quickly summarize",
-    "short summary",
-    "just give me",
-    "3 bullets",
-    "three bullets",
-    "short",
-)
 DIRECT_SUMMARY_CAT_CHAR_BUDGET = 1400
 
 
@@ -61,7 +51,7 @@ class SummaryRuntimeMixin:
             metadata={
                 "agent": "reader",
                 "tool_name": "reader",
-                "tool_arguments": {"path": rel_path, "coverage": coverage},
+                "tool_arguments": {"path": rel_path, "coverage": coverage, "mode": "summary"},
                 "tool_use_id": "reader:{0}".format(rel_path),
                 "summary": final_text,
             },
@@ -102,26 +92,24 @@ class SummaryRuntimeMixin:
                 offset = next_offset
             return payloads, "partial"
 
-    def _latest_reader_coverage(self, session_id: str, rel_path: str) -> str:
+    def _latest_reader_coverage(self, session_id: str, rel_path: str, allowed_modes: Tuple[str, ...] = ("summary", "")) -> str:
         for message in reversed(self.session_store.load_messages(session_id)):
             if not self._is_reader_summary_message(message):
                 continue
             args = message.metadata.get("tool_arguments", {}) or message.metadata.get("args", {}) or {}
             if str(args.get("path", "")).strip() != rel_path:
                 continue
+            mode = str(args.get("mode", "")).strip()
+            if allowed_modes and mode not in allowed_modes:
+                continue
             coverage = str(args.get("coverage", "")).strip()
             if coverage:
                 return coverage
         return "unknown"
 
-    def _session_has_partial_reader_summary(self, session_id: str) -> bool:
-        for message in reversed(self.session_store.load_messages(session_id)):
-            if not self._is_reader_summary_message(message):
-                continue
-            args = message.metadata.get("tool_arguments", {}) or message.metadata.get("args", {}) or {}
-            if str(args.get("coverage", "")).strip() and str(args.get("coverage", "")).strip() != "complete":
-                return True
-        return False
+    def _has_partial_reader_summary_for_path(self, session_id: str, rel_path: str) -> bool:
+        coverage = self._latest_reader_coverage(session_id, rel_path)
+        return bool(coverage and coverage not in ("complete", "unknown"))
 
     def _postprocess_direct_file_summary_output(self, session_id: str, prompt: str, text: str) -> str:
         return self._finalize_direct_file_summary_output(session_id, prompt, text)
@@ -132,66 +120,18 @@ class SummaryRuntimeMixin:
         processed = text
         if self._is_brief_summary_prompt(prompt):
             processed = self._format_brief_direct_file_summary(processed)
-        if not self._session_has_partial_reader_summary(session_id):
+        rel_path = self._prompt_direct_file_path(prompt)
+        if not rel_path or not self._has_partial_reader_summary_for_path(session_id, rel_path):
             return processed
         if "Preliminary summary (partial file coverage)." in processed:
             return processed
         return "Preliminary summary (partial file coverage).\n" + processed
 
     def _is_direct_file_summary_prompt(self, prompt: str) -> bool:
-        rel_path = self._prompt_direct_file_path(prompt)
-        if not rel_path:
-            return False
-        lowered = prompt.lower()
-        summary_terms = (
-            "summarize",
-            "summary",
-            "explain",
-            "what does",
-            "responsible for",
-            "負責什麼",
-            "說明",
-            "幾點",
-            "3 點",
-            "3點",
-            "bullets",
-        )
-        structure_terms = (
-            "class",
-            "classes",
-            "function",
-            "functions",
-            "method",
-            "methods",
-            "structure",
-            "outline",
-            "symbol",
-            "architecture",
-            "類別",
-            "方法",
-            "哪些 class",
-            "哪些 method",
-            "程式架構",
-        )
-        trace_terms = (
-            "trace",
-            "call path",
-            "used",
-            "where",
-            "flow",
-            "import",
-            "how ",
-        )
-        has_summary_signal = any(term in lowered for term in summary_terms)
-        has_structure_signal = any(term in lowered for term in structure_terms)
-        has_trace_signal = any(term in lowered for term in trace_terms)
-        return has_summary_signal and not has_structure_signal and not has_trace_signal
+        return self._prompt_intent(prompt).direct_file_summary
 
     def _is_brief_summary_prompt(self, prompt: str) -> bool:
-        if not self._is_direct_file_summary_prompt(prompt):
-            return False
-        lowered = prompt.lower()
-        return any(term in lowered for term in BRIEF_SUMMARY_SIGNALS)
+        return self._prompt_intent(prompt).brief_summary
 
     def _direct_file_summary_reader_instructions(self, brief_summary_mode: bool) -> str:
         if brief_summary_mode:
@@ -234,6 +174,8 @@ class SummaryRuntimeMixin:
         for raw_line in body.splitlines():
             line = raw_line.strip()
             if not line:
+                continue
+            if line in ("Candidate responsibilities for human review:",):
                 continue
             if line.startswith(("Evidence:", "Tag:", "Review note:", "Suggested keep:", "Suggested review/remove:")):
                 continue

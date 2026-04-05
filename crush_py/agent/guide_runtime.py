@@ -3,15 +3,24 @@ from typing import Any, Dict, List, Tuple
 
 from ..backends.base import BackendError, BaseBackend
 from ..output_sanitize import sanitize_text
+from .prompt_intent import detect_guide_output_mode, should_reread_guide_prompt
 from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, GUIDE_APPENDIX, READER_APPENDIX
 
 
 class GuideRuntimeMixin:
     def _run_direct_file_guide_reader(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
         mode = self._guide_output_mode(prompt)
-        previous_summary = self._latest_guide_reader_summary(session_id, rel_path)
-        if previous_summary and self._should_reuse_guide_summary(prompt, previous_summary):
-            return self._answer_from_reused_guide_summary(session_id, backend, prompt, rel_path, mode, previous_summary, stream=stream)
+        previous_summary, previous_coverage = self._latest_guide_reader_result(session_id, rel_path)
+        if previous_summary and self._should_reuse_guide_summary(prompt, previous_summary, previous_coverage):
+            return self._answer_from_reused_guide_summary(
+                session_id,
+                backend,
+                prompt,
+                rel_path,
+                mode,
+                previous_summary,
+                stream=stream,
+            )
 
         payloads, coverage = self._collect_guide_file_reads(session_id, rel_path)
         compact_payloads = self._compact_reader_cat_payloads(payloads)
@@ -129,20 +138,14 @@ class GuideRuntimeMixin:
         return self._collect_summary_file_reads(session_id, rel_path)
 
     def _is_guide_prompt(self, prompt: str) -> bool:
-        return prompt.lstrip().lower().startswith("guide mode:")
+        return self._prompt_intent(prompt).guide_mode
 
     def _is_direct_file_guide_prompt(self, prompt: str) -> bool:
-        return self._is_guide_prompt(prompt) and bool(self._prompt_direct_file_path(prompt)) and not self._is_direct_file_trace_prompt(prompt)
+        intent = self._prompt_intent(prompt)
+        return intent.guide_mode and bool(intent.direct_file_path) and not intent.direct_file_trace
 
     def _guide_output_mode(self, prompt: str) -> str:
-        lowered = prompt.lower()
-        if any(term in lowered for term in ("checklist", "step-by-step", "step by step", "action list")):
-            return "checklist"
-        if any(term in lowered for term in ("stuck", "failed", "does not work", "doesn't work", "not work", "error", "step failed")):
-            return "troubleshooting"
-        if any(term in lowered for term in ("read first", "start with", "reading order", "learn first", "which docs should i read", "onboarding")):
-            return "learning_path"
-        return "beginner_summary"
+        return detect_guide_output_mode(prompt)
 
     def _direct_file_guide_reader_instructions(self, mode: str) -> str:
         common = (
@@ -207,7 +210,7 @@ class GuideRuntimeMixin:
         if "sources:" not in text.lower():
             source_hint = self._guide_source_hints(payloads) or rel_path
             text = text.rstrip() + "\nSources: " + source_hint
-        if coverage != "complete" and "partial file coverage" not in text.lower():
+        if coverage not in ("complete", "reused") and "partial file coverage" not in text.lower():
             text = "Preliminary guide (partial file coverage).\n" + text
         return text
 
@@ -254,38 +257,16 @@ class GuideRuntimeMixin:
             "Sources: {1}".format(line_preview or "see the cited lines for the exact wording", source_hint)
         )
 
-    def _should_reuse_guide_summary(self, prompt: str, previous_summary: str) -> bool:
-        lowered = prompt.lower()
-        exact_evidence_signals = (
-            "exact line",
-            "exact lines",
-            "which line",
-            "what line",
-            "quote",
-            "quoted",
-            "verbatim",
-            "原文",
-            "哪一行",
-            "哪幾行",
-            "精確",
-            "逐字",
-        )
-        reread_signals = (
-            "show me the doc",
-            "read the file",
-            "reread",
-            "re-read",
-            "full text",
-            "全文",
-            "重新讀",
-        )
-        if any(signal in lowered for signal in exact_evidence_signals + reread_signals):
+    def _should_reuse_guide_summary(self, prompt: str, previous_summary: str, previous_coverage: str) -> bool:
+        if should_reread_guide_prompt(prompt):
+            return False
+        if previous_coverage not in ("complete", "reused"):
             return False
         if not previous_summary.strip():
             return False
         return True
 
-    def _latest_guide_reader_summary(self, session_id: str, rel_path: str) -> str:
+    def _latest_guide_reader_result(self, session_id: str, rel_path: str) -> Tuple[str, str]:
         for message in reversed(self.session_store.load_messages(session_id)):
             if not self._is_reader_summary_message(message):
                 continue
@@ -294,8 +275,10 @@ class GuideRuntimeMixin:
                 continue
             if str(args.get("path", "")).strip() != rel_path:
                 continue
-            return sanitize_text(message.content or message.metadata.get("summary", "")).strip()
-        return ""
+            summary = sanitize_text(message.content or message.metadata.get("summary", "")).strip()
+            coverage = str(args.get("coverage", "")).strip() or "unknown"
+            return summary, coverage
+        return "", "unknown"
 
     def _guide_source_hints(self, payloads: List[Dict[str, Any]]) -> str:
         hints = []

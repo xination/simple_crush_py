@@ -3,7 +3,6 @@ from typing import Any, Dict, List, Optional
 
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from ..output_sanitize import sanitize_text
-from ..tools.base import ToolError
 from ..tools.outline_providers import SUPPORTED_SUFFIXES
 from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
 
@@ -15,22 +14,23 @@ MAX_READER_TOOL_CALLS = 3
 
 class ReaderRuntimeMixin:
     def _run_reader_agent(self, session_id: str, backend: BaseBackend, prompt: str, rel_path: str, stream: bool = False) -> str:
-        if self._is_direct_file_guide_prompt(prompt):
+        intent = self._prompt_intent(prompt)
+        if intent.guide_mode and intent.direct_file_path and not intent.direct_file_trace:
             return self._run_direct_file_guide_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if self._is_direct_file_flow_trace_prompt(prompt):
+        if intent.direct_file_flow_trace:
             return self._run_direct_file_flow_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if self._is_direct_file_variable_trace_prompt(prompt):
+        if intent.direct_file_variable_trace:
             return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
-        if self._is_direct_file_summary_prompt(prompt):
+        if intent.direct_file_summary:
             return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path, stream=stream)
         reader_tool_names = self._reader_tool_names_for_path(rel_path)
         strategy = (
-            "This is a direct-file summary request. Use `cat` first unless the user explicitly asks about structure, classes, methods, functions, symbols, or architecture."
-            if self._is_direct_file_summary_prompt(prompt)
+            "This is a direct-file summary request. Prefer `cat` first. Use `get_outline` only if the user explicitly asks about structure, classes, methods, functions, symbols, or architecture."
+            if intent.direct_file_summary
             else (
-                "This target is a non-code file. Use `cat` only and do not use `get_outline`."
+                "This target is a non-code file. Use `cat` only. Do not use `get_outline`."
                 if self._prefer_cat_only_for_path(rel_path)
-                else "Use `get_outline` first if it helps, then `cat` if needed."
+                else "This is a code file. Use `get_outline` first if it helps narrow structure, then use `cat` for confirming evidence."
             )
         )
         conversation = [
@@ -82,58 +82,8 @@ class ReaderRuntimeMixin:
             if not executed_calls:
                 continue
             tool_calls_used += len(executed_calls)
-            self.session_store.append_message(
-                session_id,
-                "assistant",
-                self._squashed_assistant_text(turn),
-                kind="tool_use",
-                metadata={
-                    "agent": "reader",
-                    "tool": executed_calls[0].name if executed_calls else "",
-                    "tool_names": [tool_call.name for tool_call in executed_calls],
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "name": tool_call.name,
-                            "arguments": dict(tool_call.arguments),
-                        }
-                        for tool_call in executed_calls
-                    ],
-                    "assistant_text": self._squashed_assistant_text(turn),
-                },
-            )
-
-            tool_results = []
-            for tool_call in executed_calls:
-                arguments = dict(tool_call.arguments)
-                try:
-                    result = self.run_tool(tool_call.name, arguments)
-                except ToolError as exc:
-                    result = "Tool error: {0}".format(exc)
-                result = sanitize_text(result)
-                summary = self._summarize_tool_result(session_id, tool_call.name, arguments, result)
-                backend_tool_result = {
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "tool_name": tool_call.name,
-                    "content": self._backend_tool_result_content(tool_call.name, result, summary),
-                }
-                tool_results.append(backend_tool_result)
-                self.session_store.append_message(
-                    session_id,
-                    "user",
-                    backend_tool_result["content"],
-                    kind="tool_result",
-                    metadata={
-                        "agent": "reader",
-                        "tool": tool_call.name,
-                        "tool_name": tool_call.name,
-                        "tool_arguments": arguments,
-                        "tool_use_id": tool_call.id,
-                        "summary": summary,
-                        "encoding_used": self._tool_result_encoding(tool_call.name, result),
-                    },
-                )
+            self._record_agent_tool_use(session_id, "reader", turn, executed_calls)
+            tool_results, _ = self._execute_agent_tool_calls(session_id, "reader", executed_calls)
             conversation.append({"role": "user", "content": tool_results})
 
         raise BackendError("Reader agent exceeded the maximum number of rounds.")
