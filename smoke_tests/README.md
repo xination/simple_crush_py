@@ -166,8 +166,8 @@ Expected:
 ### Case W1: implicit instruction doc in a tiny workspace
 
 ```powershell
-cd C:\PL\Dropbox\3_my_program\experimenting\crush_py\tf_experiment_test
-$env:PYTHONPATH = (Resolve-Path '..').Path
+cd C:\PL\Dropbox\3_my_program\experimenting\crush_py\smoke_tests\tf_experiment_test
+$env:PYTHONPATH = (Resolve-Path '..\\..').Path
 python -m crush_py --config config.json --prompt "help me understand the instruction"
 ```
 
