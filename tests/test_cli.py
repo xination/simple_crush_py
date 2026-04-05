@@ -20,6 +20,7 @@ from crush_py.repl import run_repl
 class FakeRuntime:
     def __init__(self, config=None, session_store=None):
         self.prompts = []
+        self.quick_file_calls = []
         self.streams = []
         self.show_thinking_flags = []
         self.session_ids = []
@@ -37,6 +38,11 @@ class FakeRuntime:
         self.prompts.append(prompt)
         self.streams.append(stream)
         self.show_thinking_flags.append(show_thinking)
+        return "ok"
+
+    def ask_quick_file(self, path, prompt, stream=False):
+        self.quick_file_calls.append((path, prompt))
+        self.streams.append(stream)
         return "ok"
 
 
@@ -131,13 +137,59 @@ class CliTests(unittest.TestCase):
 
         help_text = parser.format_help()
 
+        self.assertIn("Quick mode for one text file.", help_text)
         self.assertIn("Trace code flow for a variable, symbol, or request.", help_text)
         self.assertIn("Summarize one file in a short 3-point overview.", help_text)
         self.assertIn("Ask docs-based, beginner-friendly questions.", help_text)
         self.assertIn("When to use these modes:", help_text)
+        self.assertIn("--file PATH", help_text)
         self.assertIn("--summarize PATH", help_text)
         self.assertIn("--trace REQUEST", help_text)
         self.assertIn("--guide QUESTION", help_text)
+
+    def test_main_uses_quick_file_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config_path = workspace / "config.json"
+            config_path.write_text(
+                (
+                    '{\n'
+                    '  "workspace_root": ".",\n'
+                    '  "sessions_dir": ".crush_py/sessions",\n'
+                    '  "default_backend": "lm_studio",\n'
+                    '  "trace_mode": "lean",\n'
+                    '  "backends": {\n'
+                    '    "lm_studio": {\n'
+                    '      "type": "openai_compat",\n'
+                    '      "model": "demo",\n'
+                    '      "base_url": "http://example.test/v1",\n'
+                    '      "api_key": "not-needed"\n'
+                    "    }\n"
+                    "  }\n"
+                    "}\n"
+                ),
+                encoding="utf-8",
+            )
+            fake_runtime = FakeRuntime()
+
+            with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
+                with patch("builtins.print") as print_mock:
+                    exit_code = main(
+                        [
+                            "--config",
+                            str(config_path),
+                            "--file",
+                            "README.md",
+                            "--prompt",
+                            "show me how to start",
+                            "--stream",
+                        ]
+                    )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(fake_runtime.quick_file_calls, [("README.md", "show me how to start")])
+            self.assertEqual(fake_runtime.streams, [True])
+            print_mock.assert_not_called()
 
     def test_main_uses_trace_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 
-from crush_py.repl_commands import HELP_TEXT, parse_optional_limit, safe_split, try_handle_command
+from crush_py.repl_commands import HELP_TEXT, parse_optional_limit, parse_quick_command, safe_split, try_handle_command
 
 
 @dataclass
@@ -31,6 +31,7 @@ class FakeRuntime:
         self.used_sessions = []
         self.new_session_calls = 0
         self.prompts = []
+        self.quick_prompts = []
         self.show_thinking_flags = []
         self.models = []
 
@@ -65,6 +66,12 @@ class FakeRuntime:
         self.show_thinking_flags.append(show_thinking)
         return "assistant-result:{0}".format(prompt)
 
+    def ask_quick_file(self, path, prompt, stream=False):
+        self.quick_prompts.append((path, prompt, stream))
+        if stream:
+            print("quick-result:{0}:{1}".format(path, prompt), end="")
+        return "quick-result:{0}:{1}".format(path, prompt)
+
 
 class ReplCommandsTests(unittest.TestCase):
     def test_safe_split_falls_back_when_quotes_are_unbalanced(self):
@@ -79,6 +86,12 @@ class ReplCommandsTests(unittest.TestCase):
             result = parse_optional_limit("0", "Usage: /history [LIMIT]")
         self.assertIsNone(result)
         self.assertIn("Usage: /history [LIMIT]", stdout.getvalue())
+
+    def test_parse_quick_command_extracts_path_and_prompt(self):
+        self.assertEqual(
+            parse_quick_command("/quick @README.md, show me how to start"),
+            ("README.md", "show me how to start"),
+        )
 
     def test_try_handle_command_runs_tool_command(self):
         runtime = FakeRuntime()
@@ -168,6 +181,12 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertNotIn("/tools", HELP_TEXT)
         self.assertNotIn("/tree", HELP_TEXT)
 
+    def test_help_text_shows_quick_command(self):
+        self.assertIn("/quick @PATH, PROMPT", HELP_TEXT)
+        self.assertIn("always streams", HELP_TEXT)
+        self.assertIn("first comma", HELP_TEXT)
+        self.assertIn("everything after the first comma", HELP_TEXT)
+
     def test_tool_trace_command_shows_trace_log(self):
         runtime = FakeRuntime()
         stdout = io.StringIO()
@@ -199,3 +218,34 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertIsNone(exit_code)
         self.assertEqual(runtime.models, ["google/gemma-3-4b"])
         self.assertIn("model=google/gemma-3-4b", stdout.getvalue())
+
+    def test_quick_command_uses_quick_file_mode(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(
+                runtime,
+                "/quick @README.md, show me how to start, prefer in a list format",
+            )
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(
+            runtime.quick_prompts,
+            [("README.md", "show me how to start, prefer in a list format", True)],
+        )
+        self.assertEqual(stdout.getvalue().count("quick-result:README.md:show me how to start"), 1)
+
+    def test_quick_command_forces_stream_even_when_repl_stream_is_false(self):
+        runtime = FakeRuntime()
+
+        handled, exit_code = try_handle_command(
+            runtime,
+            "/quick @README.md, show me how to start",
+            stream=False,
+        )
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertEqual(runtime.quick_prompts, [("README.md", "show me how to start", True)])

@@ -36,6 +36,13 @@ def complete_input(runtime, buffer_text: str, text: str):
 
     if stripped.startswith("/cat "):
         return complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
+    if stripped.startswith("/quick "):
+        quick_body = stripped.split(" ", 1)[1]
+        if "," not in quick_body:
+            quick_target = quick_body.lstrip()
+            if quick_target.startswith("@"):
+                return ["@" + item for item in complete_workspace_paths(runtime, quick_target[1:])]
+            return ["@" + item for item in complete_workspace_paths(runtime, quick_target)]
     if stripped.startswith("/ls "):
         return complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
     if stripped.startswith("/find "):

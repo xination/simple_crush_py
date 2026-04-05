@@ -258,6 +258,20 @@ class OpenAICompatBackendTests(unittest.TestCase):
         self.assertEqual(turn.text, "Hello world")
         self.assertEqual(turn.tool_calls, [])
 
+    def test_stream_generate_yields_incremental_text_chunks(self):
+        sse_payload = (
+            'data: {"choices":[{"delta":{"content":"Hello "}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"world"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        response = FakeHTTPResponse({})
+        response._stream = io.BytesIO(sse_payload.encode("utf-8"))
+
+        with patch.object(self.backend, "_request", return_value=response):
+            chunks = list(self.backend.stream_generate("system prompt", []))
+
+        self.assertEqual(chunks, ["Hello ", "world"])
+
 
 if __name__ == "__main__":
     unittest.main()

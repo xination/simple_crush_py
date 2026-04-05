@@ -25,6 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Read-focused repository helper for small local models.",
         epilog=(
             "When to use these modes:\n"
+            "  --file PATH        Quick mode for one text file. Read it fully and answer from that file only.\n"
             "  --summarize PATH   Use when you want a short file summary in 3 concise points.\n"
             "  --trace REQUEST    Use when you want to follow how a variable, value, or flow moves through code.\n"
             "  --guide QUESTION   Use when you want beginner-friendly help from workspace docs, steps, or setup notes."
@@ -33,6 +34,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--session", help="Resume an existing session ID")
+    parser.add_argument(
+        "--file",
+        help="Quick file mode. Read one workspace file fully and answer only from that file.",
+    )
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Send one prompt and exit")
     prompt_group.add_argument(
@@ -94,6 +99,10 @@ def main(argv=None) -> int:
     configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.file and not args.prompt:
+        parser.error("--file requires --prompt.")
+    if args.file and any((args.trace, args.guide, args.summarize)):
+        parser.error("--file only works with --prompt.")
 
     try:
         config = load_config(config_path=args.config, base_dir=str(Path.cwd()))
@@ -105,6 +114,12 @@ def main(argv=None) -> int:
 
     if args.session:
         runtime.use_session(args.session)
+
+    if args.file:
+        text = runtime.ask_quick_file(args.file, args.prompt, stream=args.stream)
+        if not args.stream:
+            print(text)
+        return 0
 
     prompt = prompt_from_args(args)
     if prompt:

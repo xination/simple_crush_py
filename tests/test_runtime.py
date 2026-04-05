@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 from crush_py.agent.runtime import AgentRuntime
 from crush_py.agent.intent_router import IntentDecision
@@ -13,6 +14,7 @@ from crush_py.output_sanitize import sanitize_text
 from crush_py.repl import _format_history, _format_trace
 from crush_py.repl_commands import try_handle_command
 from crush_py.store.session_store import SessionStore
+from crush_py.tools.base import ToolError
 from crush_py.tools.cat import CatTool
 
 
@@ -477,6 +479,45 @@ class FakeNoToolConversationBackend(BaseBackend):
 
     def supports_tool_calls(self):
         return True
+
+
+class FakeQuickFileBackend(BaseBackend):
+    def __init__(self):
+        self.system_prompt = None
+        self.messages_seen = None
+        self.tools_seen = None
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.system_prompt = system_prompt
+        self.messages_seen = list(messages)
+        self.tools_seen = tools
+        return AssistantTurn(text="Start with `python -m crush_py --help`.")
+
+
+class FakeQuickFileStreamingBackend(BaseBackend):
+    def __init__(self):
+        self.stream_messages = None
+        self.stream_system_prompt = None
+        self.generate_turn_called = False
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        self.stream_system_prompt = system_prompt
+        self.stream_messages = list(messages)
+        yield "1. Start with"
+        yield " `python -m crush_py --help`."
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.generate_turn_called = True
+        raise AssertionError("generate_turn should not be used for no-tool streaming")
 
 
 class FakeRepoQuestionNeedsToolsBackend(BaseBackend):
@@ -2687,6 +2728,138 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertEqual(len(backend.generate_turn_calls), 1)
             self.assertIsNone(backend.generate_turn_calls[0]["tools"])
             self.assertIn("Direct-answer mode:", backend.generate_turn_calls[0]["system_prompt"])
+
+    def test_quick_file_mode_reads_one_file_without_tools(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nUse `python -m crush_py --help`.\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeQuickFileBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask_quick_file("README.md", "show me how to start", stream=False)
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(result, "Start with `python -m crush_py --help`.")
+            self.assertIsNone(backend.tools_seen)
+            self.assertIn("Direct-answer mode:", backend.system_prompt)
+            self.assertEqual(len(backend.messages_seen), 3)
+            self.assertIn("Quick file mode is active.", backend.messages_seen[0]["content"])
+            self.assertIn("show me how to start", backend.messages_seen[1]["content"])
+            self.assertIn("File content from `README.md`", backend.messages_seen[2]["content"])
+            self.assertIn("python -m crush_py --help", backend.messages_seen[2]["content"])
+            self.assertEqual([message.kind for message in messages], ["message", "message"])
+
+    def test_quick_file_mode_rejects_large_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "big.txt").write_bytes(b"a" * (1024 * 1024 + 1))
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+
+            with self.assertRaises(ToolError):
+                runtime.ask_quick_file("big.txt", "summarize this", stream=False)
+
+    def test_quick_file_mode_stream_prints_incrementally(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nUse `python -m crush_py --help`.\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeQuickFileStreamingBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                result = runtime.ask_quick_file("README.md", "show me how to start", stream=True)
+
+            rendered = stdout.getvalue()
+            self.assertEqual(result, "1. Start with `python -m crush_py --help`.")
+            self.assertFalse(backend.generate_turn_called)
+            self.assertIn("1. Start with `python -m crush_py --help`.", rendered)
+            self.assertIn("show me how to start", backend.stream_messages[1]["content"])
+
+    def test_quick_file_mode_stays_stateless_even_after_prior_turns(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nUse `python -m crush_py --help`.\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeQuickFileBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            store_session = runtime.new_session()
+            store.append_message(store_session.id, "user", "previous prompt")
+            store.append_message(store_session.id, "assistant", "previous answer")
+
+            runtime.ask_quick_file("README.md", "show me how to start", stream=False)
+
+            self.assertEqual(len(backend.messages_seen), 3)
+            rendered = json.dumps(backend.messages_seen, ensure_ascii=False)
+            self.assertNotIn("previous prompt", rendered)
+            self.assertNotIn("previous answer", rendered)
+
+    def test_quick_file_mode_reuses_cached_file_text_on_repeat(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nUse `python -m crush_py --help`.\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            runtime._create_backend = lambda backend_cfg: FakeQuickFileBackend()
+
+            with patch("crush_py.agent.runtime.read_text_with_fallback") as read_mock:
+                read_mock.return_value = ("# crush_py\nUse `python -m crush_py --help`.\n", "utf-8")
+                runtime.ask_quick_file("README.md", "first question", stream=False)
+                runtime.ask_quick_file("README.md", "second question", stream=False)
+
+            self.assertEqual(read_mock.call_count, 1)
+
+    def test_quick_file_mode_records_cache_debug_metadata_in_debug_trace_mode(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nUse `python -m crush_py --help`.\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            config.trace_mode = "debug"
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            runtime._create_backend = lambda backend_cfg: FakeQuickFileBackend()
+
+            runtime.ask_quick_file("README.md", "first question", stream=False)
+            runtime.ask_quick_file("README.md", "second question", stream=False)
+
+            messages = store.load_messages(runtime.active_session.id)
+            user_messages = [message for message in messages if message.role == "user"]
+
+            self.assertEqual(user_messages[0].metadata.get("quick_file_cache_status"), "miss")
+            self.assertEqual(user_messages[0].metadata.get("quick_file_cache_source"), "disk")
+            self.assertEqual(user_messages[1].metadata.get("quick_file_cache_status"), "hit")
+            self.assertEqual(user_messages[1].metadata.get("quick_file_cache_source"), "disk")
+
+    def test_full_cat_result_populates_quick_file_cache(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("line one\nline two\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            session = runtime.new_session()
+
+            runtime._summarize_tool_result(
+                session.id,
+                "cat",
+                {"path": "README.md", "full": True},
+                '<file path="README.md" offset="0" limit="2" encoding="utf-8">\n     1|line one\n     2|line two\n</file>',
+            )
+            with patch("crush_py.agent.runtime.read_text_with_fallback") as read_mock:
+                text, debug = runtime._read_quick_file("README.md")
+
+            self.assertEqual(text, "line one\nline two")
+            self.assertEqual(debug["status"], "hit")
+            self.assertEqual(debug["source"], "cat_full")
+            read_mock.assert_not_called()
 
     def test_repo_question_still_enters_tool_loop_when_router_requires_evidence(self):
         with tempfile.TemporaryDirectory() as tmpdir:

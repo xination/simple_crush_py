@@ -12,6 +12,10 @@ HELP_TEXT = """Commands:
 /find PATTERN [PATH]  locate files by filename/path pattern, with fuzzy fallback
 /grep PATTERN [PATH] [INCLUDE]
 /cat PATH [OFFSET] [LIMIT]
+/quick @PATH, PROMPT  single-file quick mode; always streams; skips intent detection and tools
+                      format: use the first comma to separate file path and prompt
+                      prompt rule: everything after the first comma is treated as the prompt
+                      example: /quick @README.md, show me how to start in Traditional Chinese
 /summarize PATH       send a direct-file summary request
 /guide QUESTION       send a beginner-friendly docs request
 /trace REQUEST        send a trace request (same meaning as CLI --trace)
@@ -27,6 +31,7 @@ VISIBLE_COMMANDS = [
     "/find",
     "/grep",
     "/cat",
+    "/quick",
     "/summarize",
     "/guide",
     "/trace",
@@ -148,6 +153,19 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         text = runtime.ask(build_trace_prompt(request), stream=stream, show_thinking=True)
         if not stream and text:
             print(text)
+        return True, None
+    if raw.startswith("/quick "):
+        print_command_hint(raw)
+        parsed = parse_quick_command(raw)
+        if parsed is None:
+            print("Usage: /quick @PATH, PROMPT")
+            return True, None
+        path, request = parsed
+        runtime.ask_quick_file(path, request, stream=True)
+        return True, None
+    if raw == "/quick":
+        print_command_hint(raw)
+        print("Usage: /quick @PATH, PROMPT")
         return True, None
     if raw == "/trace":
         print_command_hint(raw)
@@ -322,3 +340,17 @@ def safe_split(text: str):
         return shlex.split(text)
     except ValueError:
         return text.split()
+
+
+def parse_quick_command(raw: str):
+    body = raw[len("/quick ") :].strip()
+    if not body or "," not in body:
+        return None
+    path_part, prompt_part = body.split(",", 1)
+    normalized_path = path_part.strip()
+    if normalized_path.startswith("@"):
+        normalized_path = normalized_path[1:].strip()
+    prompt = prompt_part.strip()
+    if not normalized_path or not prompt:
+        return None
+    return normalized_path, prompt

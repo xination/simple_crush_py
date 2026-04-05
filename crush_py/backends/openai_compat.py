@@ -29,11 +29,32 @@ class OpenAICompatBackend(BaseBackend):
         return self.generate_turn(system_prompt, messages, tools=tools)
 
     def stream_generate(self, system_prompt, messages, tools=None):
-        turn = self.stream_generate_turn(system_prompt, messages, tools=tools)
-        if turn.tool_calls:
-            return
-        if turn.text:
-            yield turn.text
+        response = self._request(system_prompt=system_prompt, messages=messages, stream=True, tools=tools)
+        with response:
+            data_lines = []
+            while True:
+                line = response.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8").strip()
+                if not text:
+                    if data_lines:
+                        payload = "\n".join(data_lines)
+                        data_lines = []
+                        if payload == "[DONE]":
+                            break
+                        try:
+                            body = json.loads(payload)
+                            choices = body.get("choices", [])
+                            delta = choices[0].get("delta", {})
+                        except (ValueError, AttributeError, IndexError, KeyError) as exc:
+                            raise BackendError("OpenAI-compatible streaming payload was invalid: {0}".format(exc))
+                        for chunk in self._iter_delta_text(delta):
+                            if chunk:
+                                yield chunk
+                    continue
+                if text.startswith("data:"):
+                    data_lines.append(text[5:].strip())
 
     def stream_generate_turn(self, system_prompt, messages, tools=None):
         response = self._request(system_prompt=system_prompt, messages=messages, stream=True, tools=tools)

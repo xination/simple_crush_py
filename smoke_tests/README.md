@@ -15,6 +15,28 @@
 
 ## 1. Summary
 
+### Case Q1: quick file mode
+
+```bash
+python -m unittest smoke_tests.test_quick_file_mode -q
+```
+
+Format:
+
+- `/quick @PATH, PROMPT`
+- use the first comma to separate the file path and the prompt
+- everything after the first comma is treated as the prompt
+- example: `/quick @README.md, show me how to start in Traditional Chinese`
+
+Expected:
+
+- exits with code 0
+- exercises `--file` + `--prompt` through the CLI entry point
+- prints a single-file answer without planner or tool-loop behavior
+- repeated quick-mode reads reuse cached file text
+- repeated quick-mode turns stay stateless at the model-context level
+- in `trace_mode=debug`, session metadata shows quick-file cache `miss` then `hit`
+
 ### Case S1: brief direct-file summary
 
 ```bash

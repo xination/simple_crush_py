@@ -4,6 +4,7 @@ import threading
 import time
 from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
@@ -12,6 +13,7 @@ from ..config import AppConfig, BackendConfig
 from ..output_sanitize import sanitize_content, sanitize_text
 from ..store.session_store import SessionMeta, SessionStore
 from ..tools.base import ToolError
+from ..tools.common import ensure_in_workspace, read_text_with_fallback
 from ..tools.registry import ToolRegistry
 from .intent_router import IntentDecision, heuristic_intent_decision, merge_intent_decision, route_intent_with_llm
 from .prompt_intent import PromptIntent, classify_prompt_intent
@@ -33,6 +35,7 @@ MAX_TOOL_CALLS_PER_ROUND = 2
 MAX_RECENT_MESSAGES = 4
 MAX_INLINE_CAT_RESULT_CHARS = 6000
 MAX_BACKEND_RETRIES = 1
+MAX_QUICK_FILE_SIZE = 1024 * 1024
 LOCATOR_TOOL_NAMES = ("ls", "tree", "find", "grep")
 READ_TOOL_NAMES = LOCATOR_TOOL_NAMES + ("cat",)
 
@@ -45,6 +48,8 @@ class SessionRuntimeState:
     file_summaries: Dict[str, str] = field(default_factory=dict)
     summary_cache: Dict[Tuple[str, float, int, int], str] = field(default_factory=dict)
     intent_cache: Dict[str, IntentDecision] = field(default_factory=dict)
+    quick_file_cache: Dict[Tuple[str, float, int], str] = field(default_factory=dict)
+    quick_file_cache_sources: Dict[Tuple[str, float, int], str] = field(default_factory=dict)
 
 
 class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, ReaderRuntimeMixin):
@@ -139,6 +144,55 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                     metadata={"raw_content": sanitize_content(turn.raw_content)},
                 )
 
+        self.active_session = self.session_store.load_session(session.id)
+        return text
+
+    def ask_quick_file(self, rel_path: str, prompt: str, stream: bool = False) -> str:
+        if self.active_session is None:
+            self.new_session()
+        assert self.active_session is not None
+
+        session = self.active_session
+        backend_cfg = self._backend_config_for_session(session)
+        backend = self._create_backend(backend_cfg)
+        state = self._state_for_session(session.id)
+        normalized_path = self._normalize_quick_file_path(rel_path)
+        file_text, quick_file_debug = self._read_quick_file(normalized_path)
+        user_prompt = prompt.strip()
+        if not state.entry_point:
+            state.entry_point = sanitize_text(user_prompt).strip()
+        if normalized_path not in state.confirmed_paths:
+            state.confirmed_paths.append(normalized_path)
+
+        self.session_store.append_message(
+            session.id,
+            "user",
+            "Quick file mode for `{0}`:\n{1}".format(normalized_path, user_prompt),
+            metadata={
+                "mode": "quick_file",
+                "path": normalized_path,
+                "quick_file_cache_status": quick_file_debug["status"],
+                "quick_file_cache_source": quick_file_debug["source"],
+            },
+        )
+        messages = [
+            {
+                "role": "user",
+                "content": (
+                    "Quick file mode is active.\n"
+                    "Answer only from this file.\n"
+                    "If the file does not support the request, say so clearly.\n"
+                    "Target file: {0}"
+                ).format(normalized_path),
+            },
+            {"role": "user", "content": "User request:\n{0}".format(user_prompt)},
+            {
+                "role": "user",
+                "content": "File content from `{0}`:\n{1}".format(normalized_path, file_text),
+            },
+        ]
+        system_prompt = BASE_READ_HELPER_SYSTEM_PROMPT + DIRECT_ANSWER_APPENDIX
+        text = self._ask_without_tools(session.id, backend, messages, system_prompt, stream=stream)
         self.active_session = self.session_store.load_session(session.id)
         return text
 
@@ -347,13 +401,13 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         system_prompt: str,
         stream: bool = False,
     ) -> str:
-        turn = self._generate_turn_with_retry(backend, system_prompt, messages, tools=None, stream=stream)
-        final_text = sanitize_text(turn.text).strip()
-        final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
-        if stream and final_text:
-            self._clear_thinking_indicator_line()
-            print(final_text, end="", flush=True)
-            print("")
+        if stream:
+            final_text = self._stream_text_with_retry(backend, system_prompt, messages)
+            final_raw_content = [{"type": "text", "text": final_text}] if final_text else []
+        else:
+            turn = self._generate_turn_with_retry(backend, system_prompt, messages, tools=None, stream=False)
+            final_text = sanitize_text(turn.text).strip()
+            final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
         self.session_store.append_message(
             session_id,
             "assistant",
@@ -362,15 +416,88 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         )
         return final_text
 
+    def _stream_text_with_retry(
+        self,
+        backend: BaseBackend,
+        system_prompt: str,
+        messages: List[Dict[str, Any]],
+    ) -> str:
+        errors: List[str] = []
+        attempts = [messages]
+        fallback_messages = self._fallback_messages_for_retry(messages)
+        if fallback_messages != messages:
+            attempts.append(fallback_messages)
+        for retry_index in range(MAX_BACKEND_RETRIES + 1):
+            for candidate_messages in attempts:
+                try:
+                    chunks = []
+                    self._clear_thinking_indicator_line()
+                    for chunk in backend.stream_generate(system_prompt, candidate_messages, tools=None):
+                        chunk_text = str(chunk)
+                        if not chunk_text:
+                            continue
+                        chunks.append(chunk_text)
+                        print(chunk_text, end="", flush=True)
+                    print("")
+                    return sanitize_text("".join(chunks)).strip()
+                except BackendError as exc:
+                    errors.append(str(exc))
+            if retry_index >= MAX_BACKEND_RETRIES:
+                break
+        raise BackendError("Backend streaming turn failed after retry/fallback: {0}".format(" | ".join(errors)))
+
     def _repo_evidence_required_message(self, prompt: str) -> str:
         return (
             "I need to inspect local repository files before answering `{0}` reliably. "
             "Please try again, or ask with a concrete file/path such as `summarize README.md`."
         ).format(prompt.strip())
 
+    def _normalize_quick_file_path(self, rel_path: str) -> str:
+        normalized = str(rel_path or "").strip().replace("\\", "/")
+        if not normalized:
+            raise ToolError("`--file` requires a workspace-relative path.")
+        abs_path = (self.config.workspace_root / normalized).resolve()
+        ensure_in_workspace(self.config.workspace_root, abs_path)
+        if not abs_path.exists():
+            raise ToolError("File not found: {0}".format(normalized))
+        if abs_path.is_dir():
+            raise ToolError("Path is a directory: {0}".format(normalized))
+        try:
+            return abs_path.relative_to(self.config.workspace_root).as_posix()
+        except ValueError:
+            raise ToolError("Path is outside workspace root: {0}".format(normalized))
+
+    def _read_quick_file(self, rel_path: str) -> Tuple[str, Dict[str, str]]:
+        abs_path = (self.config.workspace_root / rel_path).resolve()
+        stat = abs_path.stat()
+        if stat.st_size > MAX_QUICK_FILE_SIZE:
+            raise ToolError("File is too large for quick mode: {0}".format(rel_path))
+        state = self._state_for_session(self.active_session.id)
+        cache_key = (rel_path, stat.st_mtime, stat.st_size)
+        if cache_key in state.quick_file_cache:
+            return state.quick_file_cache[cache_key], {
+                "status": "hit",
+                "source": state.quick_file_cache_sources.get(cache_key, "memory_cache"),
+            }
+        text, _ = read_text_with_fallback(abs_path)
+        state.quick_file_cache = {
+            key: value
+            for key, value in state.quick_file_cache.items()
+            if not (key[0] == rel_path and key != cache_key)
+        }
+        state.quick_file_cache_sources = {
+            key: value
+            for key, value in state.quick_file_cache_sources.items()
+            if not (key[0] == rel_path and key != cache_key)
+        }
+        state.quick_file_cache[cache_key] = text
+        state.quick_file_cache_sources[cache_key] = "disk"
+        return text, {"status": "miss", "source": "disk"}
+
     def _summarize_tool_result(self, session_id: str, tool_name: str, arguments: Dict[str, Any], result: str) -> str:
         state = self._state_for_session(session_id)
         if tool_name == "cat":
+            self._maybe_cache_quick_file_from_cat(session_id, arguments, result)
             summary = self._cat_summary_from_cache(arguments, result)
             path = str(arguments.get("path", "")).strip()
             if path:
@@ -390,6 +517,56 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         if tool_name in ("tree", "ls"):
             return "Directory overview gathered for `{0}`.".format(arguments.get("path", "."))
         return _single_line(result, 240)
+
+    def _maybe_cache_quick_file_from_cat(self, session_id: str, arguments: Dict[str, Any], result: str) -> None:
+        rel_path = str(arguments.get("path", "")).strip()
+        if not rel_path or "File has more lines." in result:
+            return
+        normalized_path = rel_path.replace("\\", "/")
+        abs_path = (self.config.workspace_root / normalized_path).resolve()
+        try:
+            ensure_in_workspace(self.config.workspace_root, abs_path)
+        except ToolError:
+            return
+        if not abs_path.exists() or abs_path.is_dir():
+            return
+        stat = abs_path.stat()
+        if stat.st_size > MAX_QUICK_FILE_SIZE:
+            return
+        text = self._extract_text_from_cat_result(result)
+        if text is None:
+            return
+        state = self._state_for_session(session_id)
+        cache_key = (normalized_path, stat.st_mtime, stat.st_size)
+        state.quick_file_cache = {
+            key: value
+            for key, value in state.quick_file_cache.items()
+            if not (key[0] == normalized_path and key != cache_key)
+        }
+        state.quick_file_cache_sources = {
+            key: value
+            for key, value in state.quick_file_cache_sources.items()
+            if not (key[0] == normalized_path and key != cache_key)
+        }
+        state.quick_file_cache[cache_key] = text
+        state.quick_file_cache_sources[cache_key] = "cat_full"
+
+    def _extract_text_from_cat_result(self, result: str) -> Optional[str]:
+        extracted_lines: List[str] = []
+        saw_file_block = False
+        for line in result.splitlines():
+            if line.startswith("<file "):
+                saw_file_block = True
+                continue
+            if line.startswith("</file>"):
+                continue
+            if "|" not in line:
+                continue
+            _, content = line.split("|", 1)
+            extracted_lines.append(content)
+        if not saw_file_block:
+            return None
+        return "\n".join(extracted_lines)
 
     def _cat_summary_from_cache(self, arguments: Dict[str, Any], result: str) -> str:
         rel_path = str(arguments.get("path", "")).strip()

@@ -107,6 +107,7 @@ python -m crush_py
 python -m crush_py --summarize README.md
 python -m crush_py --trace "the variable session_id in crush_py/store/session_store.py"
 python -m crush_py --guide "turn README.md into a checklist"
+python -m crush_py --file README.md --prompt "show me how to start, prefer in a list format" --stream
 ```
 
 ## Tips For Better Results
@@ -256,6 +257,31 @@ python -m crush_py --session <session_id> --guide "I am stuck during setup in RE
 - `/cat`
 - `/history`
 - `/trace`
+
+### `/quick`
+
+Use `/quick` for single-file direct answers when you want to skip intent detection,
+skip tool planning, and answer only from one file.
+
+Format:
+
+- `/quick @PATH, PROMPT`
+- use the first comma to separate the file path and the prompt
+- everything after the first comma is treated as the prompt
+
+Examples:
+
+```text
+/quick @README.md, show me how to start
+/quick @README.md, show me how to start in Traditional Chinese, within 100 words
+```
+
+Notes:
+
+- `/quick` always streams in REPL, even if the REPL itself was started without `--stream`
+- `/quick` is stateless at the model-context level: previous chat turns are not sent
+- repeated `/quick` reads for the same unchanged file reuse an in-memory file cache
+- when `trace_mode` is `debug`, quick-file user messages record cache `miss`/`hit`
 
 ### 常用例子
 

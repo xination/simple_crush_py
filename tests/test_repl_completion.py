@@ -104,6 +104,15 @@ class ReplCompletionTests(unittest.TestCase):
             matches = complete_input(runtime, "/cat R", "R")
             self.assertEqual(matches, ["README.md"])
 
+    def test_complete_input_quick_completes_at_prefixed_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("", encoding="utf-8")
+            runtime = FakeRuntime(workspace)
+
+            matches = complete_input(runtime, "/quick @R", "@R")
+            self.assertEqual(matches, ["@README.md"])
+
 
 if __name__ == "__main__":
     unittest.main()
