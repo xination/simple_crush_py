@@ -325,6 +325,69 @@ class FakeInlineCatResultBackend(BaseBackend):
         return True
 
 
+class FakeInlineFindResultBackend(BaseBackend):
+    def __init__(self):
+        self.second_turn_messages = None
+        self.turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        if self.turn_count == 1:
+            return AssistantTurn(
+                text="I will locate the file first.",
+                tool_calls=[ToolCall(id="find-1", name="find", arguments={"pattern": "*notes.txt"})],
+                raw_content=[
+                    {"type": "text", "text": "I will locate the file first."},
+                    {"type": "tool_use", "id": "find-1", "name": "find", "input": {"pattern": "*notes.txt"}},
+                ],
+            )
+        self.second_turn_messages = list(messages)
+        return AssistantTurn(text="Confirmed path: notes.txt\nUnconfirmed branches: none\nNext step: none")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeInlineGrepResultBackend(BaseBackend):
+    def __init__(self):
+        self.second_turn_messages = None
+        self.turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        if self.turn_count == 1:
+            return AssistantTurn(
+                text="I will grep for the target string.",
+                tool_calls=[ToolCall(id="grep-1", name="grep", arguments={"pattern": "needle", "path": ".", "include": "*.py"})],
+                raw_content=[
+                    {"type": "text", "text": "I will grep for the target string."},
+                    {
+                        "type": "tool_use",
+                        "id": "grep-1",
+                        "name": "grep",
+                        "input": {"pattern": "needle", "path": ".", "include": "*.py"},
+                    },
+                ],
+            )
+        self.second_turn_messages = list(messages)
+        return AssistantTurn(text="Confirmed path: src/demo.py\nUnconfirmed branches: none\nNext step: none")
+
+    def supports_tool_calls(self):
+        return True
+
+
 class FakeVariableTraceDirectBackend(BaseBackend):
     def __init__(self):
         self.reader_messages = None
@@ -528,13 +591,33 @@ class FakeReaderThreeCallBackend(BaseBackend):
             self.final_reader_tools = tools
             return AssistantTurn(
                 text=(
-                    "Confirmed path: notes.txt\n"
+                    "Confirmed path: notes.py\n"
                     "Summary: the file spans four lines gathered across two cat pages.\n"
                     "Evidence: 1|one ; 2|two ; 3|three ; 4|four\n"
                     "Unresolved uncertainty: none"
                 )
             )
         return AssistantTurn(text="Confirmed path: notes.txt\nUnconfirmed branches: none\nNext step: none")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeReaderToolSelectionBackend(BaseBackend):
+    def __init__(self):
+        self.reader_tools_seen = []
+
+    def generate(self, system_prompt, messages, tools=None):
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_tools_seen.append([tool["name"] for tool in (tools or [])])
+            return AssistantTurn(text="Confirmed path: README.md\nSummary: doc file\nEvidence: README\nUnresolved uncertainty: none")
+        return AssistantTurn(text="Confirmed path: README.md\nUnconfirmed branches: none\nNext step: none")
 
     def supports_tool_calls(self):
         return True
@@ -1699,6 +1782,53 @@ class AgentRuntimeTests(unittest.TestCase):
             tool_results = backend.second_turn_messages[-1]["content"]
             self.assertIn('<file path="notes.txt"', tool_results[0]["content"])
 
+    def test_small_find_result_is_forwarded_to_backend_in_full(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "notes.txt").write_text("one\ntwo\nthree\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeInlineFindResultBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            runtime.ask("Locate the notes file")
+
+            self.assertIsNotNone(backend.second_turn_messages)
+            tool_results = next(
+                message["content"]
+                for message in backend.second_turn_messages
+                if isinstance(message.get("content"), list)
+                and message["content"]
+                and message["content"][0].get("type") == "tool_result"
+                and message["content"][0].get("tool_name") == "find"
+            )
+            self.assertIn("notes.txt", tool_results[0]["content"])
+            self.assertNotIn("Find produced", tool_results[0]["content"])
+
+    def test_small_grep_result_is_forwarded_to_backend_in_full(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "src").mkdir()
+            (workspace / "src" / "demo.py").write_text("needle = 1\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeInlineGrepResultBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            runtime.ask("Find where needle appears")
+
+            self.assertIsNotNone(backend.second_turn_messages)
+            tool_results = next(
+                message["content"]
+                for message in backend.second_turn_messages
+                if isinstance(message.get("content"), list)
+                and message["content"]
+                and message["content"][0].get("type") == "tool_result"
+                and message["content"][0].get("tool_name") == "grep"
+            )
+            self.assertIn("src/demo.py:", tool_results[0]["content"])
+            self.assertNotIn("matched 1 file", tool_results[0]["content"])
+
     def test_reader_raw_tool_payload_is_excluded_from_planner_history(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
@@ -1782,13 +1912,13 @@ class AgentRuntimeTests(unittest.TestCase):
     def test_reader_can_use_up_to_three_tool_calls_before_forced_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            (workspace / "notes.txt").write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+            (workspace / "notes.py").write_text("def one():\n    return 1\n\ndef two():\n    return 2\n", encoding="utf-8")
             config = self._make_config(workspace)
             runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
             backend = FakeReaderThreeCallBackend()
             runtime._create_backend = lambda backend_cfg: backend
 
-            result = runtime.ask("Trace notes.txt")
+            result = runtime.ask("Trace notes.py")
 
             self.assertIn("Confirmed path: notes.txt", result)
             self.assertEqual(
@@ -1796,6 +1926,19 @@ class AgentRuntimeTests(unittest.TestCase):
                 [["get_outline", "cat"], ["get_outline", "cat"], ["get_outline", "cat"]],
             )
             self.assertIsNone(backend.final_reader_tools)
+
+    def test_reader_uses_cat_only_for_non_code_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# Demo\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            runtime = AgentRuntime(config, SessionStore(config.sessions_dir, trace_mode=config.trace_mode))
+            backend = FakeReaderToolSelectionBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            runtime.ask("What is in README.md?")
+
+            self.assertEqual(backend.reader_tools_seen, [["cat"]])
 
     def test_plain_backend_persists_final_assistant_raw_content(self):
         with tempfile.TemporaryDirectory() as tmpdir:

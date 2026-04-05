@@ -108,7 +108,17 @@ class ToolTests(unittest.TestCase):
 
         result = tool.run({"pattern": "REA", "path": "."})
 
-        self.assertIn("README.md", result)
+        self.assertIn("DME.md", result)
+        self.assertIn("\033[31mREA\033[0m", result)
+
+    def test_find_highlights_contiguous_match_in_red(self):
+        tool = FindTool(self.workspace)
+        (self.workspace / "benchmark.txt").write_text("demo\n", encoding="utf-8")
+
+        result = tool.run({"pattern": "ben", "path": "."})
+
+        self.assertIn("\033[31mben\033[0mchmark.txt", result)
+        self.assertNotIn("backends", result)
 
     def test_grep_returns_matching_lines(self):
         tool = GrepTool(self.workspace)

@@ -6,6 +6,9 @@ from .common import ensure_in_workspace, should_skip_path
 
 
 MAX_RESULTS = 100
+MAX_FUZZY_GAP_COST = 1
+ANSI_RED = "\033[31m"
+ANSI_RESET = "\033[0m"
 
 
 class FindTool(BaseTool):
@@ -53,7 +56,7 @@ class FindTool(BaseTool):
             rel = path.relative_to(self.workspace_root).as_posix()
             if path.is_dir():
                 rel += "/"
-            matches.append(rel)
+            matches.append(_highlight_contiguous_match(rel, pattern))
             if len(matches) >= MAX_RESULTS:
                 break
 
@@ -88,10 +91,10 @@ class FindTool(BaseTool):
                 continue
             if path.is_dir():
                 rel += "/"
-            scored.append((score, len(rel), rel))
+            scored.append((score, len(rel), rel, _highlight_fuzzy_match(rel, needle)))
 
         scored.sort(key=lambda item: (item[0], item[1], item[2]))
-        return [rel for _, _, rel in scored[:MAX_RESULTS]]
+        return [highlighted for _, _, _, highlighted in scored[:MAX_RESULTS]]
 
     def _best_fuzzy_score(self, needle: str, haystacks):
         best_score = None
@@ -117,4 +120,47 @@ def _subsequence_score(needle: str, haystack: str):
         if position >= 0:
             gap_cost += next_position - position - 1
         position = next_position
+    if gap_cost > MAX_FUZZY_GAP_COST:
+        return None
     return gap_cost * 10 + (start_index or 0)
+
+
+def _highlight_contiguous_match(text: str, pattern: str) -> str:
+    needle = pattern.strip()
+    if not needle or any(char in needle for char in "*?[]"):
+        return text
+    lowered_text = text.lower()
+    lowered_needle = needle.lower()
+    start = lowered_text.find(lowered_needle)
+    if start < 0:
+        return text
+    end = start + len(needle)
+    return text[:start] + ANSI_RED + text[start:end] + ANSI_RESET + text[end:]
+
+
+def _highlight_fuzzy_match(text: str, needle: str) -> str:
+    if not needle:
+        return text
+    lowered_text = text.lower()
+    positions = []
+    index = -1
+    for char in needle:
+        index = lowered_text.find(char, index + 1)
+        if index < 0:
+            return text
+        positions.append(index)
+
+    parts = []
+    position_set = set(positions)
+    in_highlight = False
+    for idx, char in enumerate(text):
+        if idx in position_set and not in_highlight:
+            parts.append(ANSI_RED)
+            in_highlight = True
+        if idx not in position_set and in_highlight:
+            parts.append(ANSI_RESET)
+            in_highlight = False
+        parts.append(char)
+    if in_highlight:
+        parts.append(ANSI_RESET)
+    return "".join(parts)

@@ -21,20 +21,38 @@ def configure_utf8_stdio() -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Read-focused repository helper for small local models.")
+    parser = argparse.ArgumentParser(
+        description="Read-focused repository helper for small local models.",
+        epilog=(
+            "When to use these modes:\n"
+            "  --summarize PATH   Use when you want a short file summary in 3 concise points.\n"
+            "  --trace REQUEST    Use when you want to follow how a variable, value, or flow moves through code.\n"
+            "  --guide QUESTION   Use when you want beginner-friendly help from workspace docs, steps, or setup notes."
+        ),
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
     parser.add_argument("--config", help="Path to config.json")
     parser.add_argument("--session", help="Resume an existing session ID")
     prompt_group = parser.add_mutually_exclusive_group()
     prompt_group.add_argument("--prompt", help="Send one prompt and exit")
-    prompt_group.add_argument("--trace", help="Send one trace request and exit")
-    prompt_group.add_argument("--guide", help="Ask beginner-friendly questions about workspace docs and exit")
-    prompt_group.add_argument("--summarize", help="Summarize one file and exit")
-    prompt_group.add_argument("--summarize-brief", help="Summarize one file briefly and exit")
+    prompt_group.add_argument(
+        "--trace",
+        help="Trace code flow for a variable, symbol, or request. Use this to answer where something is passed, stored, or transformed.",
+    )
+    prompt_group.add_argument(
+        "--guide",
+        help="Ask docs-based, beginner-friendly questions. Use this for setup, checklists, troubleshooting, or plain-language explanations.",
+    )
+    prompt_group.add_argument(
+        "--summarize",
+        help="Summarize one file in a short 3-point overview. Use this when you want the file's main responsibilities, not a code trace.",
+    )
+    prompt_group.add_argument("--summarize-detail", help="Summarize one file with detailed review-draft output and exit")
     parser.add_argument("--stream", action="store_true", help="Stream backend output")
     return parser
 
 
-def build_summary_prompt(path: str, brief: bool = False) -> str:
+def build_summary_prompt(path: str, brief: bool = True) -> str:
     normalized = path.strip()
     if brief:
         return "Give a short summary for {0}".format(normalized)
@@ -70,10 +88,10 @@ def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
         return build_trace_prompt(args.trace)
     if args.guide:
         return build_guide_prompt(args.guide)
-    if args.summarize_brief:
-        return build_summary_prompt(args.summarize_brief, brief=True)
+    if args.summarize_detail:
+        return build_summary_prompt(args.summarize_detail, brief=False)
     if args.summarize:
-        return build_summary_prompt(args.summarize, brief=False)
+        return build_summary_prompt(args.summarize, brief=True)
     return None
 
 
@@ -100,4 +118,4 @@ def main(argv=None) -> int:
             print(text)
         return 0
 
-    return run_repl(runtime, stream=True if args.stream is False else args.stream)
+    return run_repl(runtime, stream=args.stream)

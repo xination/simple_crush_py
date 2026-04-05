@@ -484,7 +484,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         return []
 
     def _backend_tool_result_content(self, tool_name: str, result: str, summary: str) -> str:
-        if tool_name in ("cat", "get_outline", "tree", "ls") and len(result) <= MAX_INLINE_CAT_RESULT_CHARS:
+        if tool_name in ("cat", "get_outline", "tree", "ls", "find", "grep") and len(result) <= MAX_INLINE_CAT_RESULT_CHARS:
             return result
         return summary
 

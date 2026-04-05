@@ -1,8 +1,10 @@
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from ..backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from ..output_sanitize import sanitize_text
 from ..tools.base import ToolError
+from ..tools.outline_providers import SUPPORTED_SUFFIXES
 from .runtime_prompts import BASE_READ_HELPER_SYSTEM_PROMPT, READER_APPENDIX
 
 
@@ -21,10 +23,15 @@ class ReaderRuntimeMixin:
             return self._run_direct_file_variable_trace_reader(session_id, backend, prompt, rel_path, stream=stream)
         if self._is_direct_file_summary_prompt(prompt):
             return self._run_direct_file_summary_reader(session_id, backend, prompt, rel_path, stream=stream)
+        reader_tool_names = self._reader_tool_names_for_path(rel_path)
         strategy = (
             "This is a direct-file summary request. Use `cat` first unless the user explicitly asks about structure, classes, methods, functions, symbols, or architecture."
             if self._is_direct_file_summary_prompt(prompt)
-            else "Use `get_outline` first if it helps, then `cat` if needed."
+            else (
+                "This target is a non-code file. Use `cat` only and do not use `get_outline`."
+                if self._prefer_cat_only_for_path(rel_path)
+                else "Use `get_outline` first if it helps, then `cat` if needed."
+            )
         )
         conversation = [
             {
@@ -44,7 +51,7 @@ class ReaderRuntimeMixin:
                 backend,
                 BASE_READ_HELPER_SYSTEM_PROMPT + READER_APPENDIX,
                 conversation,
-                tools=self.tools.specs(READER_TOOL_NAMES) if remaining_tool_calls > 0 else None,
+                tools=self.tools.specs(reader_tool_names) if remaining_tool_calls > 0 else None,
                 stream=stream,
             )
             final_text = sanitize_text(turn.text).strip()
@@ -130,6 +137,14 @@ class ReaderRuntimeMixin:
             conversation.append({"role": "user", "content": tool_results})
 
         raise BackendError("Reader agent exceeded the maximum number of rounds.")
+
+    def _prefer_cat_only_for_path(self, rel_path: str) -> bool:
+        return Path(rel_path).suffix.lower() not in SUPPORTED_SUFFIXES
+
+    def _reader_tool_names_for_path(self, rel_path: str):
+        if self._prefer_cat_only_for_path(rel_path):
+            return ("cat",)
+        return READER_TOOL_NAMES
 
     def _record_reader_cat_tool(self, session_id: str, arguments: Dict[str, Any]) -> str:
         return self._record_reader_tool(session_id, "cat", arguments)

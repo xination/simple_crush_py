@@ -138,6 +138,19 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["--prompt", "hello", "--summarize", "README.md"])
 
+    def test_parser_help_explains_trace_summarize_and_guide(self):
+        parser = build_parser()
+
+        help_text = parser.format_help()
+
+        self.assertIn("Trace code flow for a variable, symbol, or request.", help_text)
+        self.assertIn("Summarize one file in a short 3-point overview.", help_text)
+        self.assertIn("Ask docs-based, beginner-friendly questions.", help_text)
+        self.assertIn("When to use these modes:", help_text)
+        self.assertIn("--summarize PATH", help_text)
+        self.assertIn("--trace REQUEST", help_text)
+        self.assertIn("--guide QUESTION", help_text)
+
     def test_main_uses_summarize_detail_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
