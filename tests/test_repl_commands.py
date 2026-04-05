@@ -3,7 +3,7 @@ import unittest
 from contextlib import redirect_stdout
 from dataclasses import dataclass
 
-from crush_py.repl_commands import parse_optional_limit, safe_split, try_handle_command
+from crush_py.repl_commands import HELP_TEXT, parse_optional_limit, safe_split, try_handle_command
 
 
 @dataclass
@@ -30,6 +30,7 @@ class FakeRuntime:
         self.used_sessions = []
         self.new_session_calls = 0
         self.prompts = []
+        self.show_thinking_flags = []
 
     def new_session(self):
         self.new_session_calls += 1
@@ -51,8 +52,9 @@ class FakeRuntime:
         self.tool_calls.append((name, payload))
         return "tool-result:{0}:{1}".format(name, payload)
 
-    def ask(self, prompt, stream=False):
+    def ask(self, prompt, stream=False, show_thinking=False):
         self.prompts.append((prompt, stream))
+        self.show_thinking_flags.append(show_thinking)
         return "assistant-result:{0}".format(prompt)
 
 
@@ -107,7 +109,9 @@ class ReplCommandsTests(unittest.TestCase):
 
     def test_trace_command_sends_trace_prompt(self):
         runtime = FakeRuntime()
-        handled, exit_code = try_handle_command(runtime, "/trace how prompt flows inside crush_py/agent/runtime.py")
+        stdout = io.StringIO()
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/trace how prompt flows inside crush_py/agent/runtime.py")
 
         self.assertTrue(handled)
         self.assertIsNone(exit_code)
@@ -115,6 +119,7 @@ class ReplCommandsTests(unittest.TestCase):
             runtime.prompts,
             [("Trace how prompt flows inside crush_py/agent/runtime.py", False)],
         )
+        self.assertIn("\x1b[1m/trace how prompt flows inside crush_py/agent/runtime.py\x1b[0m", stdout.getvalue())
 
     def test_guide_command_sends_guide_prompt(self):
         runtime = FakeRuntime()
@@ -132,7 +137,28 @@ class ReplCommandsTests(unittest.TestCase):
 
         self.assertTrue(handled)
         self.assertIsNone(exit_code)
-        self.assertEqual(runtime.prompts, [("Summarize README.md", False)])
+        self.assertEqual(runtime.prompts, [("Give a short summary for README.md", False)])
+        self.assertEqual(runtime.show_thinking_flags, [True])
+
+    def test_summarize_command_prints_result(self):
+        runtime = FakeRuntime()
+        stdout = io.StringIO()
+
+        with redirect_stdout(stdout):
+            handled, exit_code = try_handle_command(runtime, "/summarize README.md")
+
+        self.assertTrue(handled)
+        self.assertIsNone(exit_code)
+        self.assertIn("\x1b[1m/summarize README.md\x1b[0m", stdout.getvalue())
+        self.assertIn("assistant-result:Give a short summary for README.md", stdout.getvalue())
+
+    def test_help_text_hides_advanced_commands(self):
+        self.assertNotIn("/sessions", HELP_TEXT)
+        self.assertNotIn("/use <session_id>", HELP_TEXT)
+        self.assertNotIn("/outline", HELP_TEXT)
+        self.assertNotIn("/history", HELP_TEXT)
+        self.assertNotIn("/tools", HELP_TEXT)
+        self.assertNotIn("/tree", HELP_TEXT)
 
     def test_tool_trace_command_shows_trace_log(self):
         runtime = FakeRuntime()
@@ -151,4 +177,5 @@ class ReplCommandsTests(unittest.TestCase):
         handled, exit_code = try_handle_command(runtime, "/summarize README.md", stream=True)
 
         self.assertTrue(handled)
-        self.assertEqual(runtime.prompts, [("Summarize README.md", True)])
+        self.assertEqual(runtime.prompts, [("Give a short summary for README.md", True)])
+        self.assertEqual(runtime.show_thinking_flags, [True])

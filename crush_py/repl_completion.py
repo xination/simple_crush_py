@@ -24,7 +24,7 @@ def build_completer(runtime):
 
 
 def complete_input(runtime, buffer_text: str, text: str):
-    from .repl_commands import COMMANDS, safe_split
+    from .repl_commands import VISIBLE_COMMANDS, safe_split
 
     if text.startswith("@"):
         path_matches = complete_workspace_paths(runtime, text[1:])
@@ -32,13 +32,11 @@ def complete_input(runtime, buffer_text: str, text: str):
 
     stripped = buffer_text.lstrip()
     if not stripped or (stripped.startswith("/") and " " not in stripped):
-        return [item for item in COMMANDS if item.startswith(text)]
+        return [item for item in VISIBLE_COMMANDS if item.startswith(text)]
 
     if stripped.startswith("/cat "):
         return complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
     if stripped.startswith("/ls "):
-        return complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
-    if stripped.startswith("/tree "):
         return complete_workspace_paths(runtime, stripped.split(" ", 1)[1])
     if stripped.startswith("/find "):
         args = safe_split(stripped)

@@ -71,7 +71,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         self._session_states.setdefault(session.id, SessionRuntimeState())
         return session
 
-    def ask(self, prompt: str, stream: bool = False) -> str:
+    def ask(self, prompt: str, stream: bool = False, show_thinking: bool = False) -> str:
         if self.active_session is None:
             self.new_session()
         assert self.active_session is not None
@@ -87,12 +87,13 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         messages = self._messages_for_backend(session.id)
         system_prompt = self._system_prompt_for_prompt(prompt)
 
-        with self._thinking_indicator(enabled=stream):
+        with self._thinking_indicator(enabled=(stream or show_thinking)):
             if backend.supports_tool_calls():
                 text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt, stream=stream)
                 text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
             elif stream:
                 chunks = []
+                self._clear_thinking_indicator_line()
                 for chunk in backend.stream_generate(system_prompt, messages):
                     chunks.append(chunk)
                     print(chunk, end="", flush=True)
@@ -136,8 +137,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         finally:
             stop_event.set()
             thread.join(timeout=0.2)
-            stream.write("\r" + (" " * 24) + "\r")
-            stream.flush()
+            self._clear_thinking_indicator_line()
 
     def _run_thinking_spinner(self, stream, stop_event):
         frames = ("[thinking   ]", "[thinking.  ]", "[thinking.. ]", "[thinking...]")
@@ -148,6 +148,16 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             if stop_event.wait(0.18):
                 break
             index += 1
+
+    def _clear_thinking_indicator_line(self):
+        stream = getattr(sys, "stdout", None)
+        if stream is None:
+            return
+        isatty = getattr(stream, "isatty", None)
+        if callable(isatty) and not isatty():
+            return
+        stream.write("\r" + (" " * 24) + "\r")
+        stream.flush()
 
     def available_backends(self) -> List[str]:
         return sorted(self.config.backends.keys())
@@ -269,6 +279,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
             if not turn.tool_calls:
                 if stream and final_text:
+                    self._clear_thinking_indicator_line()
                     print(final_text, end="", flush=True)
                     print("")
                 self.session_store.append_message(

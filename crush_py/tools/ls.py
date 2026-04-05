@@ -58,13 +58,13 @@ class LsTool(BaseTool):
 
         lines = ["- {0}/".format(_display_root(rel_path))]
         counter = [0]
-        truncated = self._walk(root, lines, level=1, max_depth=depth, counter=counter)
+        truncated = self._walk(root, root, lines, level=1, max_depth=depth, counter=counter)
         if truncated:
             lines.append("")
-            lines.append("Results truncated at {0} entries. Use `/tree` or narrow the path.".format(MAX_ENTRIES))
+            lines.append("Results truncated at {0} entries. Narrow the path or reduce depth.".format(MAX_ENTRIES))
         return "\n".join(lines)
 
-    def _walk(self, current: Path, lines: List[str], level: int, max_depth: int, counter: List[int]) -> bool:
+    def _walk(self, search_root: Path, current: Path, lines: List[str], level: int, max_depth: int, counter: List[int]) -> bool:
         if level > max_depth + 1:
             return False
         try:
@@ -73,15 +73,19 @@ class LsTool(BaseTool):
             raise ToolError("Unable to list directory {0}: {1}".format(current, exc))
 
         for child in children:
-            if should_skip_path(self.workspace_root, current, child):
+            if should_skip_path(self.workspace_root, search_root, child):
                 continue
             counter[0] += 1
             if counter[0] > MAX_ENTRIES:
                 return True
-            name = child.name + ("/" if child.is_dir() else "")
+            try:
+                rel = child.relative_to(self.workspace_root).as_posix()
+            except ValueError:
+                continue
+            name = rel + ("/" if child.is_dir() else "")
             lines.append("{0}- {1}".format("  " * level, name))
             if child.is_dir() and level <= max_depth:
-                if self._walk(child, lines, level + 1, max_depth, counter):
+                if self._walk(search_root, child, lines, level + 1, max_depth, counter):
                     return True
         return False
 

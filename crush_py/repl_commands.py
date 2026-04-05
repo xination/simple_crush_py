@@ -6,68 +6,75 @@ from .tools.base import ToolError
 
 HELP_TEXT = """Commands:
 /new                  create a new session
-/sessions             list sessions
-/use <session_id>     switch to an existing session
 /backend              show available backends
-/tools                show available tools
 /ls [PATH] [DEPTH]    quick listing for a directory area
-/tree [PATH] [DEPTH]  compact tree view for a directory area
-/find PATTERN [PATH]  locate files by filename/path pattern
+/find PATTERN [PATH]  locate files by filename/path pattern, with fuzzy fallback
 /grep PATTERN [PATH] [INCLUDE]
-/outline PATH         compact symbol outline for one code file
 /cat PATH [OFFSET] [LIMIT]
 /summarize PATH       send a direct-file summary request
 /guide QUESTION       send a beginner-friendly docs request
 /trace REQUEST        send a trace request (same meaning as CLI --trace)
-/history [LIMIT]      show recent conversation messages
 /quit                 exit
 """
 
-COMMANDS = [
+VISIBLE_COMMANDS = [
     "/help",
     "/new",
-    "/sessions",
-    "/use",
     "/backend",
-    "/tools",
     "/ls",
-    "/tree",
     "/find",
     "/grep",
-    "/outline",
     "/cat",
     "/summarize",
     "/guide",
-    "/history",
     "/trace",
     "/quit",
 ]
+
+COMMANDS = VISIBLE_COMMANDS + [
+    "/sessions",
+    "/use",
+    "/tools",
+    "/outline",
+    "/history",
+    "/tree",
+]
+
+
+def print_command_hint(raw: str) -> None:
+    print("\033[1m{0}\033[0m".format(raw))
 
 
 def try_handle_command(runtime, raw: str, stream: bool = False):
     if raw == "/quit":
         return True, 0
     if raw == "/help":
+        print_command_hint(raw)
         print(HELP_TEXT)
         return True, None
     if raw == "/new":
+        print_command_hint(raw)
         session = runtime.new_session()
         print("[session] {0} ({1})".format(session.id, session.backend))
         return True, None
     if raw == "/sessions":
+        print_command_hint(raw)
         for session in runtime.session_store.list_sessions():
             print("{0}  {1}  {2}".format(session.id, session.backend, session.title))
         return True, None
     if raw == "/backend":
+        print_command_hint(raw)
         for name in runtime.available_backends():
             marker = "*" if name == runtime.active_backend_name else " "
             print("{0} {1}".format(marker, name))
         return True, None
     if raw == "/tools":
+        print_command_hint(raw)
         for name in runtime.available_tools():
             print(name)
         return True, None
     if raw == "/history" or raw.startswith("/history "):
+        print_command_hint(raw)
         args = safe_split(raw)
         if len(args) > 2:
             print("Usage: /history [LIMIT]")
@@ -78,6 +85,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         print(format_history(runtime, limit=limit))
         return True, None
     if raw == "/tool-trace" or raw.startswith("/tool-trace "):
+        print_command_hint(raw)
         args = safe_split(raw)
         if len(args) > 2:
             print("Usage: /tool-trace [LIMIT]")
@@ -88,36 +96,47 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         print(format_trace(runtime, limit=limit))
         return True, None
     if raw.startswith("/summarize "):
+        print_command_hint(raw)
         from .cli import build_summary_prompt
 
         request = raw.split(" ", 1)[1].strip()
         if not request:
             print("Usage: /summarize PATH")
             return True, None
-        runtime.ask(build_summary_prompt(request), stream=stream)
+        text = runtime.ask(build_summary_prompt(request), stream=stream, show_thinking=True)
+        if not stream and text:
+            print(text)
         return True, None
     if raw.startswith("/guide "):
+        print_command_hint(raw)
         from .cli import build_guide_prompt
 
         request = raw.split(" ", 1)[1].strip()
         if not request:
             print("Usage: /guide QUESTION")
             return True, None
-        runtime.ask(build_guide_prompt(request), stream=stream)
+        text = runtime.ask(build_guide_prompt(request), stream=stream, show_thinking=True)
+        if not stream and text:
+            print(text)
         return True, None
     if raw.startswith("/trace "):
+        print_command_hint(raw)
         from .cli import build_trace_prompt
 
         request = raw.split(" ", 1)[1].strip()
         if not request:
             print("Usage: /trace REQUEST")
             return True, None
-        runtime.ask(build_trace_prompt(request), stream=stream)
+        text = runtime.ask(build_trace_prompt(request), stream=stream, show_thinking=True)
+        if not stream and text:
+            print(text)
         return True, None
     if raw == "/trace":
+        print_command_hint(raw)
         print("Usage: /trace REQUEST")
         return True, None
     if raw.startswith("/use "):
+        print_command_hint(raw)
         session_id = raw.split(" ", 1)[1].strip()
         try:
             session = runtime.use_session(session_id)
@@ -127,6 +146,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         print("[session] {0} ({1})".format(session.id, session.backend))
         return True, None
     if raw == "/ls" or raw.startswith("/ls "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
@@ -141,6 +161,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "ls", payload)
         return True, None
     if raw == "/tree" or raw.startswith("/tree "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
@@ -152,9 +173,10 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
             payload["path"] = args[1]
         if len(args) >= 3:
             payload["depth"] = args[2]
-        run_tool_and_print(runtime, "tree", payload)
+        run_tool_and_print(runtime, "ls", payload)
         return True, None
     if raw.startswith("/find "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
@@ -167,6 +189,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "find", payload)
         return True, None
     if raw.startswith("/grep "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
@@ -181,6 +204,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "grep", payload)
         return True, None
     if raw.startswith("/outline "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)
@@ -193,6 +217,7 @@ def try_handle_command(runtime, raw: str, stream: bool = False):
         run_tool_and_print(runtime, "get_outline", payload)
         return True, None
     if raw.startswith("/cat "):
+        print_command_hint(raw)
         if runtime.active_session:
             runtime.session_store.append_message(runtime.active_session.id, "user", raw)
         args = safe_split(raw)

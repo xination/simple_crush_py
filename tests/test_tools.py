@@ -78,6 +78,8 @@ class ToolTests(unittest.TestCase):
 
         self.assertIn("- ./", result)
         self.assertIn("  - src/", result)
+        self.assertIn("    - src/demo.py", result)
+        self.assertIn("    - src/nested/", result)
         self.assertIn("  - notes.txt", result)
         self.assertNotIn(".crush_py/", result)
         self.assertNotIn("tests/", result)
@@ -99,6 +101,14 @@ class ToolTests(unittest.TestCase):
 
         self.assertIn("src/demo.py", result)
         self.assertNotIn("tests/test_demo.py", result)
+
+    def test_find_supports_fuzzy_filename_search(self):
+        tool = FindTool(self.workspace)
+        (self.workspace / "README.md").write_text("demo\n", encoding="utf-8")
+
+        result = tool.run({"pattern": "REA", "path": "."})
+
+        self.assertIn("README.md", result)
 
     def test_grep_returns_matching_lines(self):
         tool = GrepTool(self.workspace)

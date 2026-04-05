@@ -49,6 +49,15 @@ class ReplCompletionTests(unittest.TestCase):
         matches = complete_input(runtime, "/tr", "/tr")
         self.assertIn("/trace", matches)
         self.assertNotIn("/tool-trace", matches)
+        self.assertNotIn("/tools", complete_input(runtime, "/to", "/to"))
+        self.assertNotIn("/outline", complete_input(runtime, "/ou", "/ou"))
+        self.assertNotIn("/history", complete_input(runtime, "/hi", "/hi"))
+        self.assertNotIn("/tree", complete_input(runtime, "/tr", "/tr"))
+
+    def test_complete_input_hides_use_and_sessions_at_root(self):
+        runtime = FakeRuntime(Path("."), sessions=[FakeSession("sess-1"), FakeSession("other")])
+        self.assertNotIn("/use", complete_input(runtime, "/u", "/u"))
+        self.assertNotIn("/sessions", complete_input(runtime, "/s", "/s"))
 
     def test_complete_input_routes_use_to_sessions(self):
         runtime = FakeRuntime(Path("."), sessions=[FakeSession("sess-1"), FakeSession("other")])

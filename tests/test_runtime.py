@@ -1051,7 +1051,7 @@ class AgentRuntimeTests(unittest.TestCase):
             cat_result = next(message for message in messages if message.kind == "tool_result" and message.metadata.get("tool") == "cat")
             self.assertIn("Read full file `crush_py/store/session_store.py`", cat_result.metadata["summary"])
 
-    def test_direct_file_summary_prompt_requests_review_candidates_with_tags(self):
+    def test_direct_file_summary_prompt_defaults_to_brief_instructions(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "crush_py" / "store"
@@ -1066,13 +1066,11 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertIsNotNone(backend.reader_first_messages)
             prompt_text = backend.reader_first_messages[0]["content"]
-            self.assertIn("human-review draft", prompt_text)
-            self.assertIn("Return 4 to 6 candidate responsibilities", prompt_text)
-            self.assertIn("Evidence:", prompt_text)
-            self.assertIn("Tag:", prompt_text)
-            self.assertIn("Suggested keep:", prompt_text)
+            self.assertIn("give a brief summary", prompt_text.lower())
+            self.assertIn("Return exactly 3 numbered points.", prompt_text)
+            self.assertIn("No Evidence, Tag, Review note, Suggested keep, or Suggested review/remove sections.", prompt_text)
 
-    def test_assistant_reuses_reader_review_draft_without_rewriting(self):
+    def test_assistant_reuses_reader_brief_summary_without_rewriting(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "crush_py" / "store"
@@ -1086,9 +1084,9 @@ class AgentRuntimeTests(unittest.TestCase):
             result = runtime.ask("請讀 crush_py/store/session_store.py，用 3 點說明它負責什麼。")
 
             self.assertEqual(backend.planner_turn_count, 0)
-            self.assertIn("Candidate responsibilities for human review:", result)
-            self.assertIn("Tag: likely_helper", result)
-            self.assertIn("Suggested review/remove:", result)
+            self.assertIn("1. Manage each session's persisted metadata and lifecycle state.", result)
+            self.assertNotIn("Evidence:", result)
+            self.assertNotIn("Tag:", result)
 
     def test_structure_prompt_can_still_use_outline(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1163,7 +1161,7 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertIn("Preliminary summary (partial file coverage).", text)
 
-    def test_direct_file_summary_defaults_to_review_draft_mode(self):
+    def test_direct_file_summary_defaults_to_brief_mode(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             target = workspace / "crush_py" / "store"
@@ -1176,10 +1174,9 @@ class AgentRuntimeTests(unittest.TestCase):
 
             result = runtime.ask("Give a summary for crush_py/store/session_store.py.")
 
-            self.assertIn("Candidate responsibilities for human review:", result)
-            self.assertIn("Evidence:", result)
-            self.assertIn("Suggested keep:", result)
-            self.assertFalse(runtime._is_brief_summary_prompt("Give a summary for crush_py/store/session_store.py."))
+            self.assertIn("1. Manage each session's persisted metadata and lifecycle state.", result)
+            self.assertNotIn("Evidence:", result)
+            self.assertTrue(runtime._is_brief_summary_prompt("Give a summary for crush_py/store/session_store.py."))
 
     def test_detects_direct_file_guide_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1718,7 +1715,7 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertNotIn('<file path="notes.txt"', rendered)
             self.assertNotIn("I will read the file first.", rendered)
 
-    def test_repl_tree_command_history_is_available_to_next_natural_language_turn(self):
+    def test_repl_ls_command_history_is_available_to_next_natural_language_turn(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             (workspace / "run.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
@@ -1731,7 +1728,7 @@ class AgentRuntimeTests(unittest.TestCase):
 
             tree_stdout = io.StringIO()
             with redirect_stdout(tree_stdout):
-                handled, exit_code = try_handle_command(runtime, "/tree . 2")
+                handled, exit_code = try_handle_command(runtime, "/ls . 2")
 
             self.assertTrue(handled)
             self.assertIsNone(exit_code)
@@ -1741,12 +1738,12 @@ class AgentRuntimeTests(unittest.TestCase):
             rendered = json.dumps(backend.messages_seen, ensure_ascii=False)
 
             self.assertIn("run.sh", result)
-            self.assertIn("/tree . 2", rendered)
-            self.assertIn('"tool_name": "tree"', rendered)
+            self.assertIn("/ls . 2", rendered)
+            self.assertIn('"tool_name": "ls"', rendered)
             self.assertIn("Directory overview gathered for `.`.", rendered)
             self.assertIn("find the file with string 'sh'", rendered)
 
-    def test_repl_tree_then_prompt_runs_planner_search_and_reader_cat(self):
+    def test_repl_ls_then_prompt_runs_planner_search_and_reader_cat(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             (workspace / "run.sh").write_text("#!/bin/sh\necho hello\n", encoding="utf-8")
@@ -1760,7 +1757,7 @@ class AgentRuntimeTests(unittest.TestCase):
             runtime.new_session()
 
             with redirect_stdout(io.StringIO()):
-                handled, exit_code = try_handle_command(runtime, "/tree . 2")
+                handled, exit_code = try_handle_command(runtime, "/ls . 2")
 
             self.assertTrue(handled)
             self.assertIsNone(exit_code)
@@ -1775,11 +1772,11 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIn("grep", tool_use_names)
             self.assertIn("reader", tool_use_names)
             self.assertIn("cat", tool_use_names)
-            self.assertIn("tree", tool_result_names)
+            self.assertIn("ls", tool_result_names)
             self.assertIn("grep", tool_result_names)
             self.assertIn("cat", tool_result_names)
             self.assertIn("reader", tool_result_names)
-            self.assertIn("/tree . 2", planner_rendered)
+            self.assertIn("/ls . 2", planner_rendered)
             self.assertIn("Directory overview gathered for `.`.", planner_rendered)
 
     def test_reader_can_use_up_to_three_tool_calls_before_forced_summary(self):

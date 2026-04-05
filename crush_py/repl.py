@@ -37,7 +37,9 @@ def run_repl(runtime: AgentRuntime, stream: bool = False) -> int:
             continue
 
         try:
-            runtime.ask(raw, stream=stream)
+            text = runtime.ask(raw, stream=stream, show_thinking=True)
+            if not stream and text:
+                print(text)
         except BackendError as exc:
             print("Backend error: {0}".format(exc))
             continue

@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -13,20 +14,29 @@ from crush_py.cli import (
     main,
     prompt_from_args,
 )
+from crush_py.repl import run_repl
 
 
 class FakeRuntime:
     def __init__(self, config=None, session_store=None):
         self.prompts = []
         self.streams = []
+        self.show_thinking_flags = []
         self.session_ids = []
+        self.active_session = None
 
     def use_session(self, session_id):
         self.session_ids.append(session_id)
 
-    def ask(self, prompt, stream=False):
+    def new_session(self):
+        session = SimpleNamespace(id="session-1", backend="demo")
+        self.active_session = session
+        return session
+
+    def ask(self, prompt, stream=False, show_thinking=False):
         self.prompts.append(prompt)
         self.streams.append(stream)
+        self.show_thinking_flags.append(show_thinking)
         return "ok"
 
 
@@ -62,8 +72,8 @@ class CliTests(unittest.TestCase):
 
         self.assertFalse(hasattr(fake_stdout, "encoding"))
 
-    def test_build_summary_prompt_for_review_mode(self):
-        self.assertEqual(build_summary_prompt("README.md"), "Summarize README.md")
+    def test_build_summary_prompt_defaults_to_brief_mode(self):
+        self.assertEqual(build_summary_prompt("README.md"), "Give a short summary for README.md")
 
     def test_build_summary_prompt_for_brief_mode(self):
         self.assertEqual(
@@ -101,7 +111,7 @@ class CliTests(unittest.TestCase):
         parser = build_parser()
         args = parser.parse_args(["--summarize", "README.md"])
 
-        self.assertEqual(prompt_from_args(args), "Summarize README.md")
+        self.assertEqual(prompt_from_args(args), "Give a short summary for README.md")
 
     def test_prompt_from_args_builds_trace_prompt(self):
         parser = build_parser()
@@ -116,11 +126,11 @@ class CliTests(unittest.TestCase):
         self.assertIn("Guide mode:", prompt_from_args(args))
         self.assertIn("turn README.md into a checklist", prompt_from_args(args))
 
-    def test_prompt_from_args_builds_brief_summary_prompt(self):
+    def test_prompt_from_args_builds_detail_summary_prompt(self):
         parser = build_parser()
-        args = parser.parse_args(["--summarize-brief", "README.md"])
+        args = parser.parse_args(["--summarize-detail", "README.md"])
 
-        self.assertEqual(prompt_from_args(args), "Give a short summary for README.md")
+        self.assertEqual(prompt_from_args(args), "Summarize README.md")
 
     def test_parser_rejects_multiple_prompt_modes(self):
         parser = build_parser()
@@ -128,7 +138,7 @@ class CliTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parser.parse_args(["--prompt", "hello", "--summarize", "README.md"])
 
-    def test_main_uses_summarize_brief_prompt(self):
+    def test_main_uses_summarize_detail_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             config_path = workspace / "config.json"
@@ -155,10 +165,10 @@ class CliTests(unittest.TestCase):
 
             with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
                 with patch("builtins.print") as print_mock:
-                    exit_code = main(["--config", str(config_path), "--summarize-brief", "README.md"])
+                    exit_code = main(["--config", str(config_path), "--summarize-detail", "README.md"])
 
             self.assertEqual(exit_code, 0)
-            self.assertEqual(fake_runtime.prompts, ["Give a short summary for README.md"])
+            self.assertEqual(fake_runtime.prompts, ["Summarize README.md"])
             self.assertEqual(fake_runtime.streams, [False])
             print_mock.assert_called_once_with("ok")
 
@@ -278,7 +288,7 @@ class CliTests(unittest.TestCase):
             print_mock.assert_called_once_with("ok")
 
 
-    def test_main_runs_repl_with_streaming_by_default(self):
+    def test_main_runs_repl_without_streaming_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
             config_path = workspace / "config.json"
@@ -293,4 +303,15 @@ class CliTests(unittest.TestCase):
                     exit_code = main(["--config", str(config_path)])
 
             self.assertEqual(exit_code, 0)
-            run_repl_mock.assert_called_once_with(fake_runtime, stream=True)
+            run_repl_mock.assert_called_once_with(fake_runtime, stream=False)
+
+    def test_run_repl_prints_plain_prompt_result(self):
+        runtime = FakeRuntime()
+
+        with patch("builtins.input", side_effect=["summarize README.md", "/quit"]):
+            with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                exit_code = run_repl(runtime, stream=False)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ok", stdout.getvalue())
+        self.assertEqual(runtime.show_thinking_flags, [True])
