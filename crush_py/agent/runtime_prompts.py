@@ -10,6 +10,14 @@ Ground every answer in local evidence such as paths, headings, symbols, or file 
 Separate confirmed facts, likely inferences, and unknowns.
 """
 
+DIRECT_ANSWER_APPENDIX = """
+Direct-answer mode:
+- answer the user directly without using tools
+- do not browse files, search the repo, or plan tool steps
+- keep lightweight conversation natural and concise
+- if the user asks for repo facts that need evidence, say you need to inspect files first
+"""
+
 PLANNER_APPENDIX = """
 Planner mode:
 - locate likely files with discovery tools first

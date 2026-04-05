@@ -17,6 +17,7 @@ from .intent_router import IntentDecision, heuristic_intent_decision, merge_inte
 from .prompt_intent import PromptIntent, classify_prompt_intent
 from .runtime_prompts import (
     BASE_READ_HELPER_SYSTEM_PROMPT,
+    DIRECT_ANSWER_APPENDIX,
     DIRECT_FILE_APPENDIX,
     GUIDE_APPENDIX,
     PLANNER_APPENDIX,
@@ -96,12 +97,24 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
 
         self.session_store.append_message(session.id, "user", prompt)
         messages = self._messages_for_backend(session.id)
-        system_prompt = self._system_prompt_for_prompt(prompt)
+        decision = self._intent_decision(prompt, backend=backend if backend.supports_tool_calls() else None)
+        system_prompt = self._system_prompt_for_prompt(prompt, decision=decision)
 
         with self._thinking_indicator(enabled=(stream or show_thinking)):
             if backend.supports_tool_calls():
-                text = self._ask_with_tool_loop(session.id, backend, messages, prompt, system_prompt, stream=stream)
-                text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
+                if decision.needs_tools:
+                    text = self._ask_with_tool_loop(
+                        session.id,
+                        backend,
+                        messages,
+                        prompt,
+                        system_prompt,
+                        decision,
+                        stream=stream,
+                    )
+                    text = self._postprocess_direct_file_summary_output(session.id, prompt, text)
+                else:
+                    text = self._ask_without_tools(session.id, backend, messages, system_prompt, stream=stream)
             elif stream:
                 chunks = []
                 self._clear_thinking_indicator_line()
@@ -236,6 +249,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         messages: List[Dict[str, Any]],
         prompt: str,
         system_prompt: str,
+        decision: IntentDecision,
         stream: bool = False,
     ) -> str:
         conversation = list(messages)
@@ -244,11 +258,14 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         intent = self._prompt_intent(prompt)
         forced_cat_path = intent.direct_file_path
         reader_completed_paths = set()
+        evidence_collected = False
+        evidence_retry_used = False
 
         if forced_cat_path is not None:
             self._record_reader_delegate(session_id, forced_cat_path)
             reader_summary = self._run_reader_agent(session_id, backend, prompt, forced_cat_path, stream=stream)
             reader_completed_paths.add(forced_cat_path)
+            evidence_collected = True
             if intent.direct_file_summary:
                 final_text = self._finalize_direct_file_summary_output(session_id, prompt, reader_summary.strip())
                 self._emit_stream_final_text(final_text, stream=stream)
@@ -269,6 +286,23 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             final_text = sanitize_text(turn.text).strip()
             final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
             if not turn.tool_calls:
+                if decision.needs_tools and not evidence_collected:
+                    if not evidence_retry_used:
+                        evidence_retry_used = True
+                        conversation.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Evidence is required before answering this request.\n"
+                                    "Use at least one local discovery tool first: ls, tree, find, or grep.\n"
+                                    "Do not answer from prior knowledge alone."
+                                ),
+                            }
+                        )
+                        continue
+                    fallback_text = self._repo_evidence_required_message(prompt)
+                    self._emit_stream_final_text(fallback_text, stream=stream)
+                    return self._store_final_assistant_text(session_id, fallback_text)
                 if stream and final_text:
                     self._clear_thinking_indicator_line()
                     print(final_text, end="", flush=True)
@@ -291,6 +325,8 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                 executed_calls,
                 collect_candidate_paths=True,
             )
+            if executed_calls:
+                evidence_collected = True
 
             conversation.append({"role": "user", "content": tool_results})
             reader_path = self._decide_forced_cat(prompt, candidate_paths, tool_results)
@@ -298,9 +334,39 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                 self._record_reader_delegate(session_id, reader_path)
                 reader_summary = self._run_reader_agent(session_id, backend, prompt, reader_path)
                 reader_completed_paths.add(reader_path)
+                evidence_collected = True
                 conversation = self._append_reader_summary_message(conversation, reader_path, reader_summary)
 
         raise BackendError("Tool loop exceeded the maximum number of rounds.")
+
+    def _ask_without_tools(
+        self,
+        session_id: str,
+        backend: BaseBackend,
+        messages: List[Dict[str, Any]],
+        system_prompt: str,
+        stream: bool = False,
+    ) -> str:
+        turn = self._generate_turn_with_retry(backend, system_prompt, messages, tools=None, stream=stream)
+        final_text = sanitize_text(turn.text).strip()
+        final_raw_content = sanitize_content(turn.raw_content or self._assistant_text_blocks(turn))
+        if stream and final_text:
+            self._clear_thinking_indicator_line()
+            print(final_text, end="", flush=True)
+            print("")
+        self.session_store.append_message(
+            session_id,
+            "assistant",
+            final_text,
+            metadata={"raw_content": final_raw_content},
+        )
+        return final_text
+
+    def _repo_evidence_required_message(self, prompt: str) -> str:
+        return (
+            "I need to inspect local repository files before answering `{0}` reliably. "
+            "Please try again, or ask with a concrete file/path such as `summarize README.md`."
+        ).format(prompt.strip())
 
     def _summarize_tool_result(self, session_id: str, tool_name: str, arguments: Dict[str, Any], result: str) -> str:
         state = self._state_for_session(session_id)
@@ -406,6 +472,20 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             return None
         if len(unique_paths) == 1:
             return unique_paths[0]
+        repo_overview_path = self._repo_overview_anchor_path(prompt)
+        if repo_overview_path:
+            return repo_overview_path
+        return None
+
+    def _repo_overview_anchor_path(self, prompt: str) -> Optional[str]:
+        lowered = prompt.lower()
+        if not any(term in lowered for term in ("repo", "repository", "project", "codebase")):
+            return None
+        if not any(term in lowered for term in ("what is", "what does", "explain", "describe", "for")):
+            return None
+        readme_path = self.config.workspace_root / "README.md"
+        if readme_path.is_file():
+            return "README.md"
         return None
 
     def _extract_candidate_paths(self, tool_name: str, result: str) -> List[str]:
@@ -491,6 +571,45 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
                     return path.relative_to(self.config.workspace_root).as_posix()
                 except ValueError:
                     continue
+        return self._implicit_single_doc_path(prompt)
+
+    def _implicit_single_doc_path(self, prompt: str) -> Optional[str]:
+        if not self._looks_like_doc_understanding_prompt(prompt):
+            return None
+        visible_files = []
+        for path in sorted(self.config.workspace_root.iterdir()):
+            if path.name.startswith(".") or not path.is_file():
+                continue
+            if path.name.lower() == "config.json":
+                continue
+            visible_files.append(path)
+        if len(visible_files) != 1:
+            return None
+        candidate = visible_files[0]
+        if candidate.suffix.lower() not in (".md", ".txt", ".rst"):
+            return None
+        try:
+            return candidate.relative_to(self.config.workspace_root).as_posix()
+        except ValueError:
+            return None
+
+    def _looks_like_doc_understanding_prompt(self, prompt: str) -> bool:
+        lowered = prompt.lower()
+        return any(
+            term in lowered
+            for term in (
+                "instruction",
+                "instructions",
+                "doc",
+                "document",
+                "readme",
+                "guide",
+                "understand",
+                "explain",
+                "summarize",
+                "summary",
+            )
+        )
         return None
 
     def _state_for_session(self, session_id: str) -> SessionRuntimeState:
@@ -603,8 +722,17 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
             return normalized
         return normalized[:limit].rstrip() + "\n...[retry fallback compacted]"
 
-    def _system_prompt_for_prompt(self, prompt: str) -> str:
+    def _system_prompt_for_prompt(self, prompt: str, decision: Optional[IntentDecision] = None) -> str:
         intent = self._prompt_intent(prompt)
+        if decision is None:
+            if self.active_session is not None:
+                decision = self._intent_decision(prompt)
+            else:
+                direct_file_path = intent.direct_file_path
+                is_code_file = bool(direct_file_path and not self._prefer_cat_only_for_path(direct_file_path))
+                decision = heuristic_intent_decision(prompt, direct_file_path, is_code_file, intent)
+        if not decision.needs_tools:
+            return BASE_READ_HELPER_SYSTEM_PROMPT + DIRECT_ANSWER_APPENDIX
         if intent.direct_file_trace:
             return BASE_READ_HELPER_SYSTEM_PROMPT + PLANNER_APPENDIX + DIRECT_FILE_APPENDIX + TRACE_APPENDIX
         if intent.direct_file_path:
@@ -630,7 +758,7 @@ class AgentRuntime(GuideRuntimeMixin, SummaryRuntimeMixin, TraceRuntimeMixin, Re
         is_code_file = bool(direct_file_path and not self._prefer_cat_only_for_path(direct_file_path))
         fallback = heuristic_intent_decision(prompt, direct_file_path, is_code_file, prompt_intent)
         decision = fallback
-        if backend is not None and direct_file_path and not prompt_intent.guide_mode:
+        if backend is not None and not prompt_intent.guide_mode:
             llm_decision = route_intent_with_llm(
                 backend=backend,
                 prompt=prompt,

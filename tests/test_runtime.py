@@ -9,6 +9,7 @@ from crush_py.agent.runtime import AgentRuntime
 from crush_py.agent.intent_router import IntentDecision
 from crush_py.backends.base import AssistantTurn, BackendError, BaseBackend, ToolCall
 from crush_py.config import AppConfig, BackendConfig
+from crush_py.output_sanitize import sanitize_text
 from crush_py.repl import _format_history, _format_trace
 from crush_py.repl_commands import try_handle_command
 from crush_py.store.session_store import SessionStore
@@ -442,6 +443,244 @@ class FakeRouterInvalidJsonBackend(BaseBackend):
             self.reader_messages = list(messages)
             return AssistantTurn(text="According to `README.md`, fallback reader answer.")
         return AssistantTurn(text="Fallback planner answer.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeNoToolConversationBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.generate_turn_calls = []
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return "not-json"
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.generate_turn_calls.append({"system_prompt": system_prompt, "tools": tools, "messages": list(messages)})
+        if tools:
+            return AssistantTurn(
+                text="I should explore first.",
+                tool_calls=[ToolCall(id="tool-1", name="ls", arguments={"path": "."})],
+                raw_content=[
+                    {"type": "text", "text": "I should explore first."},
+                    {"type": "tool_use", "id": "tool-1", "name": "ls", "input": {"path": "."}},
+                ],
+            )
+        return AssistantTurn(text="Hello! I can help read this repository and answer questions about local files.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeRepoQuestionNeedsToolsBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return json.dumps(
+                {
+                    "intent": "general_qa",
+                    "confidence": "high",
+                    "target_path": None,
+                    "needs_full_cat": False,
+                    "needs_tools": True,
+                }
+            )
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        if self.turn_count == 1:
+            return AssistantTurn(
+                text="I will inspect the repo first.",
+                tool_calls=[ToolCall(id="tool-1", name="ls", arguments={"path": "."})],
+                raw_content=[
+                    {"type": "text", "text": "I will inspect the repo first."},
+                    {"type": "tool_use", "id": "tool-1", "name": "ls", "input": {"path": "."}},
+                ],
+            )
+        return AssistantTurn(text="This repo is a read-focused repository helper for small local models.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeRepoQuestionNeedsRetryBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.turn_count = 0
+        self.messages_seen = []
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return json.dumps(
+                {
+                    "intent": "repo_search",
+                    "confidence": "high",
+                    "target_path": None,
+                    "needs_full_cat": False,
+                    "needs_tools": True,
+                }
+            )
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        self.messages_seen.append(list(messages))
+        if self.turn_count == 1:
+            return AssistantTurn(text="This repo is a Flask web app.")
+        if self.turn_count == 2:
+            return AssistantTurn(
+                text="I will inspect the repo first.",
+                tool_calls=[ToolCall(id="tool-1", name="ls", arguments={"path": "."})],
+                raw_content=[
+                    {"type": "text", "text": "I will inspect the repo first."},
+                    {"type": "tool_use", "id": "tool-1", "name": "ls", "input": {"path": "."}},
+                ],
+            )
+        return AssistantTurn(text="This repo is a read-focused repository helper for small local models.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeRepoQuestionStillRefusesToolsBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.turn_count = 0
+        self.messages_seen = []
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return json.dumps(
+                {
+                    "intent": "repo_search",
+                    "confidence": "high",
+                    "target_path": None,
+                    "needs_full_cat": False,
+                    "needs_tools": True,
+                }
+            )
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        self.turn_count += 1
+        self.messages_seen.append(list(messages))
+        return AssistantTurn(text="This repo is definitely a Flask web app.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeRepoQuestionReadmeAnchorBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.planner_turn_count = 0
+        self.reader_turn_count = 0
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return json.dumps(
+                {
+                    "intent": "repo_search",
+                    "confidence": "high",
+                    "target_path": None,
+                    "needs_full_cat": False,
+                    "needs_tools": True,
+                }
+            )
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_turn_count += 1
+            if self.reader_turn_count == 1:
+                return AssistantTurn(
+                    text="I will inspect README first.",
+                    tool_calls=[ToolCall(id="cat-1", name="cat", arguments={"path": "README.md"})],
+                    raw_content=[
+                        {"type": "text", "text": "I will inspect README first."},
+                        {"type": "tool_use", "id": "cat-1", "name": "cat", "input": {"path": "README.md"}},
+                    ],
+                )
+            return AssistantTurn(
+                text=(
+                    "Confirmed path: README.md\n"
+                    "Summary: crush_py is a read-focused repository helper for small local models.\n"
+                    "Evidence: 1|# crush_py\n"
+                    "Unresolved uncertainty: none"
+                )
+            )
+
+        self.planner_turn_count += 1
+        if self.planner_turn_count == 1:
+            return AssistantTurn(
+                text="I will inspect the repo root first.",
+                tool_calls=[ToolCall(id="tool-1", name="ls", arguments={"path": "."})],
+                raw_content=[
+                    {"type": "text", "text": "I will inspect the repo root first."},
+                    {"type": "tool_use", "id": "tool-1", "name": "ls", "input": {"path": "."}},
+                ],
+            )
+        return AssistantTurn(text="According to README.md, this repo is a read-focused repository helper for small local models.")
+
+    def supports_tool_calls(self):
+        return True
+
+
+class FakeImplicitSingleDocBackend(BaseBackend):
+    def __init__(self):
+        self.router_call_count = 0
+        self.planner_turn_count = 0
+        self.reader_messages = None
+
+    def generate(self, system_prompt, messages, tools=None):
+        if "Intent router:" in system_prompt:
+            self.router_call_count += 1
+            return "not-json"
+        return "unused"
+
+    def stream_generate(self, system_prompt, messages, tools=None):
+        return iter(())
+
+    def generate_turn(self, system_prompt, messages, tools=None):
+        if "Reader mode:" in system_prompt:
+            self.reader_messages = list(messages)
+            return AssistantTurn(
+                text=(
+                    "Confirmed path: INSTRUCTIONS.md\n"
+                    "Summary: this document explains how to run small, repeatable TensorFlow experiments.\n"
+                    "Evidence: define one clear question ; change one variable at a time ; record metrics and conclusions.\n"
+                    "Unresolved uncertainty: none"
+                )
+            )
+        self.planner_turn_count += 1
+        return AssistantTurn(text="planner should not be used")
 
     def supports_tool_calls(self):
         return True
@@ -1746,6 +1985,7 @@ class AgentRuntimeTests(unittest.TestCase):
                 confidence="high",
                 target_path="README.md",
                 needs_full_cat=True,
+                needs_tools=True,
                 source="test",
             )
 
@@ -2428,6 +2668,126 @@ class AgentRuntimeTests(unittest.TestCase):
 
             self.assertEqual(backend.router_call_count, 1)
             self.assertIn("fallback reader answer.", result)
+
+    def test_no_tool_conversation_prompt_skips_planner_tool_loop(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeNoToolConversationBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("hi")
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertEqual(result, "Hello! I can help read this repository and answer questions about local files.")
+            self.assertEqual([message.kind for message in messages], ["message", "message"])
+            self.assertEqual(len(backend.generate_turn_calls), 1)
+            self.assertIsNone(backend.generate_turn_calls[0]["tools"])
+            self.assertIn("Direct-answer mode:", backend.generate_turn_calls[0]["system_prompt"])
+
+    def test_repo_question_still_enters_tool_loop_when_router_requires_evidence(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nread-focused repository helper\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRepoQuestionNeedsToolsBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("what is this repo for?")
+            messages = store.load_messages(runtime.active_session.id)
+            tool_use_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_use"]
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("read-focused repository helper", result)
+            self.assertIn("ls", tool_use_names)
+
+    def test_repo_question_requires_evidence_before_accepting_planner_answer(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRepoQuestionNeedsRetryBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("what is this repo for?")
+            messages = store.load_messages(runtime.active_session.id)
+            tool_use_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_use"]
+            retry_rendered = json.dumps(backend.messages_seen[1], ensure_ascii=False)
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("read-focused repository helper", result)
+            self.assertIn("ls", tool_use_names)
+            self.assertIn("Evidence is required before answering this request.", retry_rendered)
+
+    def test_repo_question_falls_back_safely_if_planner_refuses_tools_twice(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRepoQuestionStillRefusesToolsBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("what is this repo for?")
+            messages = store.load_messages(runtime.active_session.id)
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("inspect local repository files", result)
+            self.assertEqual([message.kind for message in messages], ["message", "message"])
+
+    def test_repo_question_can_anchor_to_readme_after_initial_discovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "README.md").write_text("# crush_py\nread-focused repository helper\n", encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeRepoQuestionReadmeAnchorBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("what is this repo for?")
+            messages = store.load_messages(runtime.active_session.id)
+            tool_use_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_use"]
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertIn("read-focused repository helper", result)
+            self.assertIn("ls", tool_use_names)
+            self.assertIn("reader", tool_use_names)
+            self.assertIn("cat", tool_use_names)
+
+    def test_sanitize_text_removes_ansi_escape_codes(self):
+        cleaned = sanitize_text("\x1b[31mconfig.json\x1b[0m")
+
+        self.assertEqual(cleaned, "config.json")
+
+    def test_single_doc_workspace_fast_path_avoids_config_drift(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            (workspace / "INSTRUCTIONS.md").write_text("# Guide\nUse one variable at a time.\n", encoding="utf-8")
+            (workspace / "config.json").write_text('{"workspace_root":"."}\n', encoding="utf-8")
+            config = self._make_config(workspace)
+            store = SessionStore(config.sessions_dir, trace_mode=config.trace_mode)
+            runtime = AgentRuntime(config, store)
+            backend = FakeImplicitSingleDocBackend()
+            runtime._create_backend = lambda backend_cfg: backend
+
+            result = runtime.ask("help me understand the instruction")
+            messages = store.load_messages(runtime.active_session.id)
+            tool_use_names = [message.metadata.get("tool") for message in messages if message.kind == "tool_use"]
+            rendered = json.dumps([message.content for message in messages], ensure_ascii=False)
+
+            self.assertEqual(backend.router_call_count, 1)
+            self.assertEqual(backend.planner_turn_count, 0)
+            self.assertIn("INSTRUCTIONS.md", result)
+            self.assertIn("TensorFlow experiments", result)
+            self.assertIn("reader", tool_use_names)
+            self.assertNotIn("config.json", rendered)
 
     def test_session_model_override_is_used_for_backend_creation(self):
         with tempfile.TemporaryDirectory() as tmpdir:

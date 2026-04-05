@@ -25,6 +25,7 @@ class IntentDecision:
     confidence: str
     target_path: Optional[str]
     needs_full_cat: bool
+    needs_tools: bool
     source: str
 
 
@@ -34,16 +35,15 @@ def route_intent_with_llm(
     direct_file_path: Optional[str],
     is_code_file: bool,
 ) -> Optional[IntentDecision]:
-    if not direct_file_path:
-        return None
-
     system_prompt = (
         "Intent router:\n"
         "You classify the user's request for runtime routing.\n"
         "Return strict JSON only.\n"
         "Do not answer the user's question.\n"
         "Allowed intents: direct_file_summary, direct_file_doc_qa, direct_file_trace, guide, repo_search, general_qa.\n"
-        "Confidence must be one of: low, medium, high."
+        "Confidence must be one of: low, medium, high.\n"
+        "needs_tools must be true when local file or repo evidence is needed before answering.\n"
+        "needs_tools must be false for lightweight conversation such as greetings, thanks, acknowledgements, or capability questions."
     )
     messages = [
         {
@@ -54,13 +54,15 @@ def route_intent_with_llm(
                 "direct_file_path: {1}\n"
                 "file_kind: {2}\n"
                 "Respond with JSON matching:\n"
-                '{{"intent":"...","confidence":"...","target_path":"...","needs_full_cat":true}}\n'
+                '{{"intent":"...","confidence":"...","target_path":"...","needs_full_cat":true,"needs_tools":true}}\n'
                 "Use direct_file_doc_qa when the user asks what the file says or what it is for.\n"
                 "Use direct_file_summary when the user explicitly wants a summary.\n"
-                "Use direct_file_trace when the user wants flow, tracing, origin, usage, or movement through code."
+                "Use direct_file_trace when the user wants flow, tracing, origin, usage, or movement through code.\n"
+                "Use general_qa with needs_tools false for simple chat like hi, hello, thanks, ok, or what can you do.\n"
+                "Use general_qa or repo_search with needs_tools true for repo-level factual questions like what this repo does."
             ).format(
                 prompt.strip(),
-                direct_file_path,
+                direct_file_path or "null",
                 "code" if is_code_file else "non_code",
             ),
         }
@@ -79,6 +81,8 @@ def heuristic_intent_decision(
     prompt_intent: PromptIntent,
 ) -> IntentDecision:
     lowered = prompt.lower()
+    stripped = lowered.strip()
+    needs_tools = True
     if prompt_intent.guide_mode:
         intent = "guide"
     elif prompt_intent.direct_file_trace:
@@ -98,11 +102,18 @@ def heuristic_intent_decision(
         intent = "repo_search"
     else:
         intent = "general_qa"
+    if _is_lightweight_conversation(stripped):
+        needs_tools = False
+    elif direct_file_path or prompt_intent.guide_mode or prompt_intent.direct_file_trace or prompt_intent.direct_file_summary:
+        needs_tools = True
+    elif _is_repo_evidence_question(stripped):
+        needs_tools = True
     return IntentDecision(
         intent=intent,
         confidence="medium",
         target_path=direct_file_path,
         needs_full_cat=bool(direct_file_path and not is_code_file),
+        needs_tools=needs_tools,
         source="heuristic",
     )
 
@@ -133,8 +144,11 @@ def _parse_router_json(raw: str, direct_file_path: Optional[str]) -> Optional[In
         return None
     intent = str(payload.get("intent", "")).strip()
     confidence = str(payload.get("confidence", "")).strip().lower()
-    target_path = str(payload.get("target_path", "")).strip() or direct_file_path
+    target_path_value = payload.get("target_path", direct_file_path)
+    target_path = str(target_path_value).strip() if target_path_value is not None else None
+    target_path = target_path or direct_file_path
     needs_full_cat = bool(payload.get("needs_full_cat", False))
+    needs_tools = bool(payload.get("needs_tools", True))
     if intent not in SUPPORTED_INTENTS:
         return None
     if confidence not in SUPPORTED_CONFIDENCE:
@@ -144,5 +158,49 @@ def _parse_router_json(raw: str, direct_file_path: Optional[str]) -> Optional[In
         confidence=confidence,
         target_path=target_path,
         needs_full_cat=needs_full_cat,
+        needs_tools=needs_tools,
         source="llm",
     )
+
+
+def _is_lightweight_conversation(prompt: str) -> bool:
+    normalized = " ".join(prompt.split())
+    if not normalized:
+        return True
+    exact_matches = {
+        "hi",
+        "hello",
+        "hey",
+        "thanks",
+        "thank you",
+        "ok",
+        "okay",
+        "cool",
+        "what can you do",
+        "what can you do?",
+        "help",
+        "help?",
+    }
+    if normalized in exact_matches:
+        return True
+    short_prefixes = ("hi ", "hello ", "hey ", "thanks ", "thank you ")
+    return any(normalized.startswith(prefix) for prefix in short_prefixes)
+
+
+def _is_repo_evidence_question(prompt: str) -> bool:
+    repo_terms = (
+        "repo",
+        "repository",
+        "project",
+        "codebase",
+        "this code",
+    )
+    question_terms = (
+        "what is",
+        "what does",
+        "explain",
+        "describe",
+        "for",
+        "about",
+    )
+    return any(term in prompt for term in repo_terms) and any(term in prompt for term in question_terms)

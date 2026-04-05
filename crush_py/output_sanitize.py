@@ -7,6 +7,7 @@ _LEAKED_CALL_RE = re.compile(
     r"call:(?:unknown_tool|crush_py:[A-Za-z_][A-Za-z0-9_-]*)\{.*?\}(?=(?:<\|tool_(?:call|response)\|>|<tool_(?:call|response)\|>|$))",
     flags=re.DOTALL,
 )
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _HEADER_MARKERS = (
     "Variable trace for human review:",
     "Flow trace for human review:",
@@ -20,12 +21,14 @@ def sanitize_text(text: Any) -> str:
     if text is None:
         return ""
     cleaned = str(text)
+    cleaned = _ANSI_ESCAPE_RE.sub("", cleaned)
     cleaned = _trim_to_human_readable_start(cleaned)
     previous = None
     while cleaned != previous:
         previous = cleaned
         cleaned = _LEAKED_CALL_RE.sub("", cleaned)
         cleaned = _CONTROL_TOKEN_RE.sub("", cleaned)
+        cleaned = _ANSI_ESCAPE_RE.sub("", cleaned)
     return cleaned.strip()
 
 
