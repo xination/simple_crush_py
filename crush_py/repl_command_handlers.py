@@ -70,9 +70,13 @@ def handle_info(runtime, raw: str, stream: bool = False):
     print("Backend: {0}".format(getattr(runtime, "active_backend_name", "")))
     print("Model: {0}".format(getattr(session, "model", "")))
     workspace_root = getattr(getattr(runtime, "config", None), "workspace_root", "")
+    sessions_dir = getattr(getattr(runtime, "config", None), "sessions_dir", "")
     if isinstance(workspace_root, Path):
         workspace_root = workspace_root.as_posix()
+    if isinstance(sessions_dir, Path):
+        sessions_dir = sessions_dir.as_posix()
     print("Workspace Root: {0}".format(workspace_root))
+    print("Sessions Dir: {0}".format(sessions_dir))
     print("Trace Mode: {0}".format(getattr(getattr(runtime, "session_store", None), "trace_mode", "")))
     return True, None
 

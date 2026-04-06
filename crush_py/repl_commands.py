@@ -12,17 +12,21 @@ HELP_TEXT = """Commands:
 /new                  create a new session
 /info                 show current session and workspace status
 /ls [PATH] [DEPTH]    quick listing for a directory area
-/find PATTERN [PATH]  locate files by filename/path pattern, with fuzzy fallback
+/find PATTERN [PATH]  locate files by filename or path pattern
 /grep PATTERN [PATH] [INCLUDE]
 /cat PATH [OFFSET] [LIMIT]
-/quick @PATH, PROMPT  single-file quick mode; always streams; skips intent detection and tools
-                      format: use the first comma to separate file path and prompt
-                      prompt rule: everything after the first comma is treated as the prompt
-                      example: /quick @README.md, show me how to start in Traditional Chinese
 /summarize PATH       send a direct-file summary request
 /guide QUESTION       send a beginner-friendly docs request
 /trace REQUEST        send a trace request (same meaning as CLI --trace)
 /quit                 exit
+
+Quick File:
+/quick @PATH, PROMPT
+  - always streams
+  - skips intent detection and tools
+  - use the first comma to separate path and prompt
+  - everything after the first comma is treated as the prompt
+  - example: /quick @README.md, show me how to start
 """
 
 VISIBLE_COMMANDS = [

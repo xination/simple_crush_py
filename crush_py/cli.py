@@ -1,6 +1,8 @@
 import argparse
 import os
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -102,6 +104,36 @@ def launch_base_dir() -> Path:
     return Path.cwd()
 
 
+def resolve_writable_sessions_dir(config) -> Path:
+    candidates = [
+        Path(config.sessions_dir).resolve(),
+        (Path.home() / ".crush_py" / "sessions").resolve(),
+        (Path(tempfile.gettempdir()) / ".crush_py" / "sessions").resolve(),
+    ]
+    for index, candidate in enumerate(candidates):
+        if _is_writable_sessions_dir(candidate):
+            if index > 0:
+                print(
+                    "Warning: configured sessions_dir is not writable, falling back to {0}".format(candidate),
+                    file=sys.stderr,
+                )
+            return candidate
+    raise ConfigError("No writable sessions_dir available.")
+
+
+def _is_writable_sessions_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        if not path.is_dir():
+            return False
+        probe = path / (".write_probe_{0}".format(uuid.uuid4().hex))
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
 def main(argv=None) -> int:
     configure_utf8_stdio()
     parser = build_parser()
@@ -113,6 +145,7 @@ def main(argv=None) -> int:
 
     try:
         config = load_config(config_path=args.config, base_dir=str(launch_base_dir()))
+        config.sessions_dir = resolve_writable_sessions_dir(config)
     except (ConfigError, ValueError, OSError) as exc:
         parser.exit(status=2, message="Config error: {0}\n".format(exc))
 

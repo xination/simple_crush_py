@@ -16,6 +16,7 @@ from crush_py.cli import (
     launch_base_dir,
     main,
     prompt_from_args,
+    resolve_writable_sessions_dir,
 )
 from crush_py.repl import run_repl
 
@@ -132,6 +133,42 @@ class CliTests(unittest.TestCase):
                 with patch("crush_py.cli.Path.cwd", return_value=Path(tmpdir)):
                     self.assertEqual(launch_base_dir(), Path(tmpdir).resolve())
 
+    def test_resolve_writable_sessions_dir_prefers_configured_path_when_writable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            configured = Path(tmpdir) / "sessions"
+            config = SimpleNamespace(sessions_dir=configured)
+
+            resolved = resolve_writable_sessions_dir(config)
+
+            self.assertEqual(resolved, configured.resolve())
+
+    def test_resolve_writable_sessions_dir_falls_back_to_home_then_temp(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            config = SimpleNamespace(sessions_dir=root / "configured" / "sessions")
+            home_candidate = (root / "home" / ".crush_py" / "sessions").resolve()
+            temp_candidate = (root / "temp" / ".crush_py" / "sessions").resolve()
+
+            def fake_is_writable(path):
+                return path == temp_candidate
+
+            with patch("crush_py.cli.Path.home", return_value=root / "home"):
+                with patch("crush_py.cli.tempfile.gettempdir", return_value=str(root / "temp")):
+                    with patch("crush_py.cli._is_writable_sessions_dir", side_effect=fake_is_writable):
+                        with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                            resolved = resolve_writable_sessions_dir(config)
+
+        self.assertEqual(resolved, temp_candidate)
+        self.assertNotEqual(home_candidate, temp_candidate)
+        self.assertIn(str(temp_candidate), stderr.getvalue())
+
+    def test_resolve_writable_sessions_dir_raises_when_all_candidates_fail(self):
+        config = SimpleNamespace(sessions_dir=Path("/configured/sessions"))
+
+        with patch("crush_py.cli._is_writable_sessions_dir", return_value=False):
+            with self.assertRaisesRegex(Exception, "No writable sessions_dir available"):
+                resolve_writable_sessions_dir(config)
+
     def test_prompt_from_args_prefers_explicit_prompt(self):
         parser = build_parser()
         args = parser.parse_args(["--prompt", "hello"])
@@ -236,6 +273,21 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         load_config_mock.assert_called_once_with(config_path=None, base_dir=str(Path(caller_tmpdir).resolve()))
+
+    def test_main_replaces_sessions_dir_with_writable_fallback_before_store_init(self):
+        fake_runtime = FakeRuntime()
+        fake_config = SimpleNamespace(sessions_dir=Path("/configured/sessions"), trace_mode="lean")
+        fallback_dir = Path("/fallback/sessions")
+
+        with patch("crush_py.cli.load_config", return_value=fake_config):
+            with patch("crush_py.cli.resolve_writable_sessions_dir", return_value=fallback_dir):
+                with patch("crush_py.cli.SessionStore") as session_store_mock:
+                    with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
+                        with patch("crush_py.cli.run_repl", return_value=0):
+                            exit_code = main([])
+
+        self.assertEqual(exit_code, 0)
+        session_store_mock.assert_called_once_with(fallback_dir, trace_mode="lean")
 
     def test_main_repl_quick_command_reads_readme_from_original_caller_cwd_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -30,7 +30,10 @@ class FakeRuntime:
         self.active_session = None
         self.session_store = FakeSessionStore([FakeSession("s-1", "demo", "First session")])
         self.session_store.trace_mode = "lean"
-        self.config = SimpleNamespace(workspace_root=Path("/demo/workspace"))
+        self.config = SimpleNamespace(
+            workspace_root=Path("/demo/workspace"),
+            sessions_dir=Path("/demo/workspace/.crush_py/sessions"),
+        )
         self.tool_calls = []
         self.used_sessions = []
         self.new_session_calls = 0
@@ -231,6 +234,7 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertIn("Backend: demo", rendered)
         self.assertIn("Model: demo-model", rendered)
         self.assertIn("Workspace Root: /demo/workspace", rendered)
+        self.assertIn("Sessions Dir: /demo/workspace/.crush_py/sessions", rendered)
         self.assertIn("Trace Mode: lean", rendered)
 
     def test_quick_command_uses_quick_file_mode(self):
