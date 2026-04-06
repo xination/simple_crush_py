@@ -248,7 +248,7 @@ python -m crush_py --session <session_id> --guide "I am stuck during setup in RE
 - `/new`
 - `/sessions`
 - `/use <session_id>`
-- `/backend`
+- `/info`
 - `/tools`
 - `/ls`
 - `/tree`
@@ -257,6 +257,18 @@ python -m crush_py --session <session_id> --guide "I am stuck during setup in RE
 - `/cat`
 - `/history`
 - `/trace`
+
+### `/info`
+
+Use `/info` to inspect the current REPL/session status.
+
+It shows:
+
+- `Session`
+- `Backend`
+- `Model`
+- `Workspace Root`
+- `Trace Mode`
 
 ### `/quick`
 

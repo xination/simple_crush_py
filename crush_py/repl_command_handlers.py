@@ -1,5 +1,6 @@
 import shlex
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
 
 from .repl_display import format_history, format_trace
@@ -62,23 +63,17 @@ def handle_backend(runtime, raw: str, stream: bool = False):
     return True, None
 
 
-def handle_model_show(runtime, raw: str, stream: bool = False):
+def handle_info(runtime, raw: str, stream: bool = False):
     print_command_hint(raw)
     session = getattr(runtime, "active_session", None)
-    if session is None:
-        session = runtime.new_session()
-    print(getattr(session, "model", ""))
-    return True, None
-
-
-def handle_model_set(runtime, raw: str, stream: bool = False):
-    print_command_hint(raw)
-    model = raw.split(" ", 1)[1].strip()
-    if not model:
-        print("Usage: /model MODEL_NAME")
-        return True, None
-    session = runtime.set_session_model(model)
-    print("[session] {0} model={1}".format(session.id, session.model))
+    print("Session: {0}".format(getattr(session, "id", "")))
+    print("Backend: {0}".format(getattr(runtime, "active_backend_name", "")))
+    print("Model: {0}".format(getattr(session, "model", "")))
+    workspace_root = getattr(getattr(runtime, "config", None), "workspace_root", "")
+    if isinstance(workspace_root, Path):
+        workspace_root = workspace_root.as_posix()
+    print("Workspace Root: {0}".format(workspace_root))
+    print("Trace Mode: {0}".format(getattr(getattr(runtime, "session_store", None), "trace_mode", "")))
     return True, None
 
 
@@ -353,9 +348,7 @@ COMMAND_SPECS = [
     CommandSpec(exact("/help"), handle_help),
     CommandSpec(exact("/new"), handle_new),
     CommandSpec(exact("/sessions"), handle_sessions),
-    CommandSpec(exact("/backend"), handle_backend),
-    CommandSpec(exact("/model"), handle_model_show),
-    CommandSpec(prefix("/model "), handle_model_set),
+    CommandSpec(exact("/info"), handle_info),
     CommandSpec(exact("/tools"), handle_tools),
     CommandSpec(exact_or_prefix("/history"), handle_history),
     CommandSpec(exact_or_prefix("/tool-trace"), handle_tool_trace),

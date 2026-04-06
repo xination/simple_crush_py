@@ -53,6 +53,27 @@ class LoadConfigTests(unittest.TestCase):
             self.assertEqual(config.backends["lm_studio"].timeout, 12)
             self.assertEqual(config.backends["lm_studio"].max_tokens, 345)
 
+    def test_base_dir_controls_default_config_discovery_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            caller_root = Path(tmpdir) / "caller"
+            caller_root.mkdir()
+            nested_repo = caller_root / "crush_py"
+            nested_repo.mkdir()
+            (nested_repo / "config.json").write_text(
+                json.dumps(
+                    {
+                        "workspace_root": "..",
+                        "sessions_dir": "../.crush_py/sessions",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = load_config(base_dir=str(caller_root))
+
+            self.assertEqual(config.workspace_root, caller_root.resolve())
+            self.assertEqual(config.sessions_dir, (caller_root / ".crush_py" / "sessions").resolve())
+
     def test_raises_when_default_backend_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             config_path = Path(tmpdir) / "config.json"

@@ -5,12 +5,15 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
+from crush_py.agent.runtime import AgentRuntime
+from crush_py.backends.base import BaseBackend
 from crush_py.cli import (
     build_guide_prompt,
     build_parser,
     build_summary_prompt,
     build_trace_prompt,
     configure_utf8_stdio,
+    launch_base_dir,
     main,
     prompt_from_args,
 )
@@ -47,6 +50,23 @@ class FakeRuntime:
 
 
 class CliTests(unittest.TestCase):
+    class FakeQuickFileEchoBackend(BaseBackend):
+        def generate(self, system_prompt, messages, tools=None):
+            return "unused"
+
+        def stream_generate(self, system_prompt, messages, tools=None):
+            file_message = next(
+                message["content"]
+                for message in messages
+                if isinstance(message.get("content"), str)
+                and message["content"].startswith("File content from `README.md`:\n")
+            )
+            file_body = file_message.split("\n", 1)[1]
+            if file_body.startswith("(") and "', 'utf-8')" in file_body:
+                file_body = file_body.split("', 'utf-8')", 1)[0].lstrip("(").strip("'")
+            first_line = next((line.strip() for line in file_body.splitlines() if line.strip()), "")
+            yield "E2E quick file saw: {0}".format(first_line)
+
     def test_configure_utf8_stdio_reconfigures_windows_streams(self):
         calls = []
 
@@ -100,6 +120,17 @@ class CliTests(unittest.TestCase):
         self.assertIn("User request: turn README.md into a checklist", prompt)
         self.assertIn("answer from workspace docs when possible", prompt)
         self.assertIn("include source file hints", prompt)
+
+    def test_launch_base_dir_prefers_original_caller_cwd_env(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("crush_py.cli.os.environ", {"CRUSH_PY_CALLER_CWD": tmpdir}, clear=False):
+                self.assertEqual(launch_base_dir(), Path(tmpdir).resolve())
+
+    def test_launch_base_dir_falls_back_to_current_working_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("crush_py.cli.os.environ", {}, clear=True):
+                with patch("crush_py.cli.Path.cwd", return_value=Path(tmpdir)):
+                    self.assertEqual(launch_base_dir(), Path(tmpdir).resolve())
 
     def test_prompt_from_args_prefers_explicit_prompt(self):
         parser = build_parser()
@@ -190,6 +221,44 @@ class CliTests(unittest.TestCase):
             self.assertEqual(fake_runtime.quick_file_calls, [("README.md", "show me how to start")])
             self.assertEqual(fake_runtime.streams, [True])
             print_mock.assert_not_called()
+
+    def test_main_uses_original_caller_cwd_for_config_base_dir(self):
+        fake_runtime = FakeRuntime()
+        fake_config = SimpleNamespace(sessions_dir=Path("sessions"), trace_mode="lean")
+
+        with tempfile.TemporaryDirectory() as caller_tmpdir:
+            with patch.dict("crush_py.cli.os.environ", {"CRUSH_PY_CALLER_CWD": caller_tmpdir}, clear=False):
+                with patch("crush_py.cli.load_config", return_value=fake_config) as load_config_mock:
+                    with patch("crush_py.cli.SessionStore"):
+                        with patch("crush_py.cli.AgentRuntime", return_value=fake_runtime):
+                            with patch("crush_py.cli.run_repl", return_value=0):
+                                exit_code = main([])
+
+        self.assertEqual(exit_code, 0)
+        load_config_mock.assert_called_once_with(config_path=None, base_dir=str(Path(caller_tmpdir).resolve()))
+
+    def test_main_repl_quick_command_reads_readme_from_original_caller_cwd_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            caller_root = Path(tmpdir) / "outside"
+            caller_root.mkdir()
+            (caller_root / "README.md").write_text(
+                "# OUTER README\nThis should win.\n",
+                encoding="utf-8",
+            )
+
+            with patch.dict("crush_py.cli.os.environ", {"CRUSH_PY_CALLER_CWD": str(caller_root)}, clear=False):
+                with patch.object(
+                    AgentRuntime,
+                    "_create_backend",
+                    return_value=self.FakeQuickFileEchoBackend(),
+                ):
+                    with patch("builtins.input", side_effect=["/quick @README.md, show me the key facts", "/quit"]):
+                        with patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                            exit_code = main([])
+
+        rendered = stdout.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("E2E quick file saw: # OUTER README", rendered)
 
     def test_main_uses_trace_prompt(self):
         with tempfile.TemporaryDirectory() as tmpdir:

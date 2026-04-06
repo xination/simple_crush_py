@@ -10,8 +10,7 @@ from .repl_command_handlers import (
 
 HELP_TEXT = """Commands:
 /new                  create a new session
-/backend              show available backends
-/model [NAME]         show or set the current session model
+/info                 show current session and workspace status
 /ls [PATH] [DEPTH]    quick listing for a directory area
 /find PATTERN [PATH]  locate files by filename/path pattern, with fuzzy fallback
 /grep PATTERN [PATH] [INCLUDE]
@@ -29,8 +28,7 @@ HELP_TEXT = """Commands:
 VISIBLE_COMMANDS = [
     "/help",
     "/new",
-    "/backend",
-    "/model",
+    "/info",
     "/ls",
     "/find",
     "/grep",

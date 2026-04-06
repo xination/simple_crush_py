@@ -2,6 +2,8 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 
 from crush_py.repl_commands import HELP_TEXT, parse_optional_limit, parse_quick_command, safe_split, try_handle_command
 
@@ -27,6 +29,8 @@ class FakeRuntime:
         self.active_backend_name = "demo"
         self.active_session = None
         self.session_store = FakeSessionStore([FakeSession("s-1", "demo", "First session")])
+        self.session_store.trace_mode = "lean"
+        self.config = SimpleNamespace(workspace_root=Path("/demo/workspace"))
         self.tool_calls = []
         self.used_sessions = []
         self.new_session_calls = 0
@@ -187,6 +191,11 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertIn("first comma", HELP_TEXT)
         self.assertIn("everything after the first comma", HELP_TEXT)
 
+    def test_help_text_shows_info_command(self):
+        self.assertIn("/info", HELP_TEXT)
+        self.assertNotIn("/backend", HELP_TEXT)
+        self.assertNotIn("/model", HELP_TEXT)
+
     def test_tool_trace_command_shows_trace_log(self):
         runtime = FakeRuntime()
         stdout = io.StringIO()
@@ -207,17 +216,22 @@ class ReplCommandsTests(unittest.TestCase):
         self.assertEqual(runtime.prompts, [("Give a short summary for README.md", True)])
         self.assertEqual(runtime.show_thinking_flags, [True])
 
-    def test_model_command_sets_session_model(self):
+    def test_info_command_shows_current_status(self):
         runtime = FakeRuntime()
+        runtime.active_session = FakeSession("new-session", "demo", model="demo-model")
         stdout = io.StringIO()
 
         with redirect_stdout(stdout):
-            handled, exit_code = try_handle_command(runtime, "/model google/gemma-3-4b")
+            handled, exit_code = try_handle_command(runtime, "/info")
 
         self.assertTrue(handled)
         self.assertIsNone(exit_code)
-        self.assertEqual(runtime.models, ["google/gemma-3-4b"])
-        self.assertIn("model=google/gemma-3-4b", stdout.getvalue())
+        rendered = stdout.getvalue()
+        self.assertIn("Session: new-session", rendered)
+        self.assertIn("Backend: demo", rendered)
+        self.assertIn("Model: demo-model", rendered)
+        self.assertIn("Workspace Root: /demo/workspace", rendered)
+        self.assertIn("Trace Mode: lean", rendered)
 
     def test_quick_command_uses_quick_file_mode(self):
         runtime = FakeRuntime()

@@ -95,6 +95,13 @@ def prompt_from_args(args: argparse.Namespace) -> Optional[str]:
     return None
 
 
+def launch_base_dir() -> Path:
+    caller_cwd = os.environ.get("CRUSH_PY_CALLER_CWD", "").strip()
+    if caller_cwd:
+        return Path(caller_cwd).resolve()
+    return Path.cwd()
+
+
 def main(argv=None) -> int:
     configure_utf8_stdio()
     parser = build_parser()
@@ -105,7 +112,7 @@ def main(argv=None) -> int:
         parser.error("--file only works with --prompt.")
 
     try:
-        config = load_config(config_path=args.config, base_dir=str(Path.cwd()))
+        config = load_config(config_path=args.config, base_dir=str(launch_base_dir()))
     except (ConfigError, ValueError, OSError) as exc:
         parser.exit(status=2, message="Config error: {0}\n".format(exc))
 
