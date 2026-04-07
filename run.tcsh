@@ -9,4 +9,4 @@ endif
 set script_dir=`dirname "$script_path"`
 cd "$script_dir"
 
-python -m crush_py $*
+python -m crush_py $argv:q
